@@ -17,13 +17,16 @@ Read [the current comparison contract](docs/first_slice.md) and [the project han
 
 - Two UTF-8 files, one non-empty line per EDU; ignore only empty lines, retaining original one-based source line numbers.
 - Preserve line content exactly, including leading/trailing spaces and whitespace-only EDUs. Remove only line terminators using ordinary Python universal-newline handling.
-- Reconstruct by concatenation without separators. Compare only identical reconstructed texts. Raise `ContentMismatchError` before computing disagreements otherwise.
+- Reconstruct by concatenation without separators. Prefer exact equality with `canonical_source="reconstructed"`. Only when reconstructions differ, remove characters satisfying `str.isspace()` and compare the resulting sequences with `canonical_source="whitespace_normalized"`. Raise `ContentMismatchError` if non-whitespace sequences differ.
+- Preserve original parsed EDUs on both paths. In the fallback, project endpoints by counting preceding non-whitespace code points. Raise `BoundaryProjectionError` if distinct internal boundaries in either annotation collapse to the same offset, before creating boundary sets.
 - Offsets are Python Unicode code-point indices, with half-open `[start, end)` spans. EDU indices are zero-based.
-- Only internal EDU endpoints are annotation boundaries. Document start/end are implicit region anchors.
+- Only internal EDU endpoints inside the canonical document are annotation boundaries. Document start/end are implicit region anchors. Projected endpoints at anchors are excluded from boundary decisions; whitespace-only edge EDUs remain in the parsed annotation but do not overlap canonical regions.
 - Group all differences between consecutive shared anchors into one region and record ordered, overlapping EDU indices.
 - Export the small JSON schema documented in `docs/first_slice.md`, with sorted boundaries and regions in document order.
 
-Do not add UI/Streamlit, HTML/JavaScript, raw-text fallback, fuzzy alignment, normalization, token offsets, agreement/confidence scores, disagreement labels, guideline processing, RAG, LLM calls, databases, or persistence in this slice.
+The local Streamlit interface is a thin inspection layer: upload A/B `.txt` files, show original EDUs in symmetric columns, select a disagreement region, and optionally inspect canonical diagnostics. Escape uploaded text before HTML rendering and preserve its whitespace. Keep canonical text secondary and label whitespace-normalized text as a comparison representation. Show comparator errors without attempting repairs.
+
+Do not add complex JavaScript interactions, raw-text alignment, fuzzy alignment, normalization beyond the explicit whitespace fallback, token offsets, agreement/confidence scores, disagreement labels, guideline processing, RAG, LLM calls, databases, or persistence in this slice.
 
 ## Layout and workflow
 
@@ -31,19 +34,23 @@ Do not add UI/Streamlit, HTML/JavaScript, raw-text fallback, fuzzy alignment, no
 - `src/edu_disagreement/parsing.py`: exact line parsing and reconstruction.
 - `src/edu_disagreement/comparison.py`: boundary comparison and region grouping.
 - `src/edu_disagreement/__init__.py`: public Python API.
+- `app/streamlit_app.py`: local UI and temporary-upload adapter, calling the existing file parser/comparator without duplicating scientific logic.
 - `tests/`: small readable examples that verify the scientific contract.
 - `pyproject.toml`: package metadata and test dependency.
 
-Keep scientific logic importable and independent of any eventual UI. Use the standard library at runtime; pytest is a development dependency. Manage environments and dependencies with `uv`; commit `uv.lock` for reproducible development installs. Prefer simple functions and the existing small models over speculative abstractions or modules for future milestones.
+Keep scientific logic importable and independent of Streamlit. The core uses only the standard library; Streamlit is the only direct UI/runtime dependency and pytest is a development dependency. Manage environments and dependencies with `uv`; commit `uv.lock` for reproducible development installs. Prefer simple functions and the existing small models over speculative abstractions or modules for future milestones.
 
 From the repository root:
 
 ```sh
 uv sync
 uv run pytest
+uv run streamlit run app/streamlit_app.py
 git diff --check
 ```
 
-For scientific logic changes, test relevant edge cases and invariants: exact whitespace, line numbers, Unicode offsets, A/B symmetry, mismatch rejection, structural anchors, and region grouping. Keep output deterministic. Do not silently normalize input to make a failing case pass.
+For scientific logic changes, test relevant edge cases and invariants: exact whitespace, line numbers, Unicode offsets, A/B symmetry, mismatch rejection, structural anchors, region grouping, and collapsed-boundary rejection. Keep output deterministic. Do not introduce normalization beyond the documented whitespace fallback to make a failing case pass. Private `data/` is ignored by Git; use only `short/` samples for requested real-data checks and keep private content out of committed fixtures and docs.
+
+For UI changes, keep comparator tests unchanged, run the full suite, and use Streamlit AppTest or a local browser to check region selection, exact highlights, errors, and upload changes. Streamlit's native columns and independent scroll containers do not synchronize source-text positions across A/B.
 
 Report changed files, data flow, test results, specification ambiguities/decisions, and concrete input/output examples when completing implementation work.

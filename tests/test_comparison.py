@@ -94,7 +94,6 @@ def test_unicode_offsets_count_code_points_not_bytes_or_graphemes(tmp_path):
     [
         (edus("ab", "c"), edus("abd")),
         (edus("abc"), edus("abcd")),
-        (edus("aaa ", "bbb"), edus("aaa", "bbb")),
         (edus("é"), edus("e\u0301")),
         ((), edus("a")),
     ],

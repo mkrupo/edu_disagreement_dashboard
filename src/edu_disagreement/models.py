@@ -1,6 +1,7 @@
 """Small immutable models using canonical Unicode code-point coordinates."""
 
 from dataclasses import dataclass
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -33,11 +34,12 @@ class ComparisonResult:
     a_only_boundaries: tuple[int, ...]
     b_only_boundaries: tuple[int, ...]
     disagreement_regions: tuple[DisagreementRegion, ...]
+    canonical_source: Literal["reconstructed", "whitespace_normalized"] = "reconstructed"
 
     def to_dict(self) -> dict[str, object]:
         """Return the minimal JSON-serializable comparison schema."""
         return {
-            "canonical_source": "reconstructed",
+            "canonical_source": self.canonical_source,
             "annotations": {
                 "A": {
                     "edu_count": len(self.a_edus),

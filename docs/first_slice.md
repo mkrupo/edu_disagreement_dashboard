@@ -1,4 +1,4 @@
-# First bounded slice: exact reconstructed-text comparison
+# Comparison core: exact reconstruction and whitespace fallback
 
 This is the active implementation contract. The [original project handoff](EDU_disagreement_dashboard_handoff.md) describes broader milestones; raw-text alignment and visualization are deferred.
 
@@ -8,9 +8,18 @@ This is the active implementation contract. The [original project handoff](EDU_d
 - Ordinary Python text-file handling supports LF and CRLF line endings. Remove only line terminators, preserving all other characters. Only literally empty lines are ignored; whitespace-only lines remain EDUs.
 - `ParsedEDU(index, text, line_number)` preserves zero-based EDU indices and one-based original source line numbers.
 - Concatenating EDU texts without separators reconstructs each annotation's text.
-- Reconstructed texts must be exactly equal. `ContentMismatchError`, a `ValueError` subclass, rejects different texts before any boundaries or regions are computed. File/decoding errors propagate normally.
-- The shared reconstruction is canonical text. All offsets are Python Unicode code-point indices and all spans are half-open `[start, end)`.
+- Prefer exact reconstructed-text equality; this path preserves the shared reconstruction as canonical text and reports `canonical_source: "reconstructed"`.
+- Only if reconstructions differ, remove whitespace characters as defined by Python `str.isspace()`. If the resulting sequences differ, raise `ContentMismatchError`, a `ValueError` subclass, before computing disagreements. Otherwise use the shared whitespace-free sequence as canonical text and report `canonical_source: "whitespace_normalized"`.
+- Original parsed EDU texts remain unchanged on both paths. All offsets are Python Unicode code-point indices in the selected canonical text and all spans are half-open `[start, end)`.
 - Internal cumulative EDU endpoints are annotation boundaries. `0` and `len(text)` are structural anchors only.
+
+## Whitespace endpoint projection
+
+For the fallback, each EDU endpoint maps to the number of non-whitespace code points preceding it in the original annotation reconstruction. Distinct internal endpoints from one annotation must remain distinct: reject duplicate projected offsets with `BoundaryProjectionError` (also a `ValueError` subclass), even if a duplicate lies at a structural anchor. Validate before constructing boundary sets so no decisions are silently merged.
+
+An internal endpoint projected to `0` or `len(canonical_text)` is a structural anchor and is excluded from annotation boundaries. Whitespace-only edge EDUs remain in the parsed annotations and EDU counts, but have zero canonical extent and do not overlap a disagreement region. Internal whitespace-only EDUs that collapse adjacent internal boundaries are rejected.
+
+For example, A = `hello world\n` and B = `hello\nworld\n` reconstruct differently. The fallback uses `helloworld`, A boundaries `[]`, B boundaries `[5]`, and one region `[0, 10)` with A EDU indices `[0]` and B indices `[0, 1]`. A's original EDU text remains `hello world`.
 
 ## Data flow and result
 
@@ -18,7 +27,7 @@ This is the active implementation contract. The [original project handoff](EDU_d
 
 The comparator derives sorted A/B boundaries, their intersection, and each side's differences. Consecutive shared anchors, including implicit document start/end, define candidate spans. Emit exactly one `DisagreementRegion(start_offset, end_offset, a_edu_indices, b_edu_indices)` for each span whose internal boundary sets differ. Record only EDUs overlapping that span, in annotation order. A shared endpoint does not include the adjacent EDU outside the span.
 
-`ComparisonResult` retains canonical text and parsed EDUs for Python callers. `to_dict()` exports exactly:
+`ComparisonResult` retains canonical text, provenance, and original parsed EDUs for Python callers. `to_dict()` exports the same small schema on both paths; this exact-path example is:
 
 ```json
 {
@@ -59,13 +68,18 @@ After the README setup, use `uv run python` (or `uv run python example.py`) with
 
 ```python
 import json
-from edu_disagreement import ContentMismatchError, compare_annotations, parse_annotation
+from edu_disagreement import (
+    BoundaryProjectionError,
+    ContentMismatchError,
+    compare_annotations,
+    parse_annotation,
+)
 
 a = parse_annotation("annotation_A.txt")
 b = parse_annotation("annotation_B.txt")
 try:
     result = compare_annotations(a, b)
-except ContentMismatchError as error:
+except (ContentMismatchError, BoundaryProjectionError) as error:
     print(error)
 else:
     print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
@@ -73,11 +87,11 @@ else:
 
 ## Decisions and limits
 
-- Two empty/empty-line-only files reconstruct to empty text and produce zero EDUs, boundaries, or regions. Empty versus non-empty text is a content mismatch.
+- Two empty/empty-line-only files reconstruct to empty text and produce zero EDUs, boundaries, or regions. Empty versus text containing non-whitespace characters is a content mismatch. A whitespace-only document can compare with an empty annotation through the fallback, provided its internal boundaries do not collapse.
 - Whitespace-only lines count as EDUs because trimming would alter source content.
 - Unicode normalization is intentionally absent: `é` and `e` plus combining acute accent are different reconstructed texts. Combining marks and emoji each contribute their actual Python code-point lengths.
-- Successful exact comparisons have `warnings: []`; mismatches raise instead of returning an apparent disagreement.
+- Successful comparisons on both paths have `warnings: []`; provenance identifies the fallback without scores or taxonomies. Content mismatches and collapsed projections raise instead of returning apparent disagreements.
 - Runtime dependencies are zero; pytest is a development dependency. Scientific logic lives in `src/edu_disagreement/`.
-- No UI, CLI, raw-text fallback, alignment, normalization, scores, diagnoses, guideline processing, LLM/RAG, persistence, or database is part of this slice.
+- No UI, CLI, raw-text alignment, fuzzy alignment, normalization beyond whitespace removal, scores, diagnoses, guideline processing, LLM/RAG, persistence, or database is part of this slice.
 
-Tests cover the nine required scenarios, exact whitespace and newline preservation, empty inputs, minimal JSON serialization, and exhaustive A/B symmetry and region overlap checks for all segmentations of a tiny document.
+Tests cover the original scenarios, exact whitespace and newline preservation, empty inputs, minimal JSON serialization, and exhaustive A/B symmetry and region overlap checks for all segmentations of a tiny document. Fallback tests cover trailing spaces, separators replaced by EDU newlines, multiple whitespace differences, Unicode whitespace/code-point projection, shared boundaries, A/B symmetry, retained EDU text, structural anchors, content rejection, and collapsed-boundary rejection.
