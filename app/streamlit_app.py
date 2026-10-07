@@ -2,8 +2,6 @@
 
 from hashlib import sha256
 from html import escape
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
 import streamlit as st
 
@@ -13,18 +11,17 @@ from edu_disagreement import (
     ContentMismatchError,
     DisagreementRegion,
     ParsedEDU,
-    compare_annotations,
-    parse_annotation,
+)
+from edu_disagreement.sessions import (
+    VERDICTS, SessionValidationError, Source, compare_uploads,
+    export_session, load_session, new_session,
 )
 
 
-def compare_uploads(a_bytes: bytes, b_bytes: bytes) -> ComparisonResult:
-    """Use the existing file parser, removing temporary uploads after parsing."""
-    with TemporaryDirectory(prefix="edu-comparison-") as directory:
-        a_path, b_path = Path(directory) / "a.txt", Path(directory) / "b.txt"
-        a_path.write_bytes(a_bytes)
-        b_path.write_bytes(b_bytes)
-        return compare_annotations(parse_annotation(a_path), parse_annotation(b_path))
+VERDICT_LABELS = {
+    "a_only": "A only", "both": "Both", "b_only": "B only",
+    "neither": "Neither / alternative needed", "unresolved": "Unresolved",
+}
 
 
 def render_edus(edus: tuple[ParsedEDU, ...], selected: tuple[int, ...]) -> str:
@@ -45,15 +42,17 @@ def render_edus(edus: tuple[ParsedEDU, ...], selected: tuple[int, ...]) -> str:
 
 
 def local_context(
-    edus: tuple[ParsedEDU, ...], selected: tuple[int, ...]
+    edus: tuple[ParsedEDU, ...], selected: tuple[int, ...], context_edus: int = 1
 ) -> tuple[ParsedEDU, ...]:
-    """Return selected EDUs and one immediate neighbor on each available side."""
+    """Return selected EDUs and up to N neighbors on each available side."""
+    if context_edus < 0:
+        raise ValueError("Context size must be non-negative.")
     if not selected:
         return ()
     positions = {edu.index: position for position, edu in enumerate(edus)}
     start = positions[selected[0]]
     end = positions[selected[-1]]
-    return edus[max(0, start - 1):min(len(edus), end + 2)]
+    return edus[max(0, start - context_edus):min(len(edus), end + context_edus + 1)]
 
 
 def move_difference(step: int, total: int) -> None:
@@ -68,6 +67,7 @@ def show_annotations(
     region: DisagreementRegion | None,
     *,
     full: bool = False,
+    context_edus: int = 1,
 ) -> None:
     left, right = st.columns(2, gap="medium")
     for column, label, filename, edus, selected in (
@@ -79,13 +79,102 @@ def show_annotations(
         with column:
             st.subheader(label)
             st.caption(filename)
-            visible = edus if full else local_context(edus, selected)
+            visible = edus if full else local_context(edus, selected, context_edus)
             panel = st.container(height=600, border=True) if full else st.container(border=True)
             with panel:
                 if visible:
                     st.markdown(render_edus(visible, selected), unsafe_allow_html=True)
                 else:
                     st.caption("No non-empty EDU lines.")
+
+
+def save_assessment(region: DisagreementRegion, verdict_key: str, note_key: str) -> None:
+    """Widget state is temporary; judgments live in the region-keyed session."""
+    st.session_state["assessment_session"].assess(
+        region, st.session_state.get(verdict_key), st.session_state.get(note_key) or None
+    )
+
+
+def show_assessment(region: DisagreementRegion) -> None:
+    session = st.session_state["assessment_session"]
+    assessment = session.assessments.get(region)
+    identity = sha256(repr(region).encode("utf-8")).hexdigest()
+    suffix = f'{st.session_state["session_generation"]}_{identity}'
+    verdict_key, note_key = f"verdict_{suffix}", f"note_{suffix}"
+    # Streamlit removes widgets when navigating away. Restore from durable
+    # region-keyed records rather than relying on hidden widget state.
+    if verdict_key not in st.session_state:
+        st.session_state[verdict_key] = assessment.verdict if assessment else None
+    if note_key not in st.session_state:
+        st.session_state[note_key] = (assessment.note or "") if assessment else ""
+    with st.container(horizontal_alignment="center"):
+        st.markdown("**Which segmentation is defensible?**", width="content")
+        st.segmented_control(
+            "Which segmentation is defensible?", VERDICTS,
+            selection_mode="single", format_func=VERDICT_LABELS.__getitem__,
+            label_visibility="collapsed", width="content", key=verdict_key,
+            on_change=save_assessment, args=(region, verdict_key, note_key),
+        )
+        st.text_area(
+            "Note (optional)", key=note_key, width=650, height=100,
+            disabled=st.session_state[verdict_key] is None,
+            help="Choose a verdict to add a note. Apply edits with Ctrl+Enter or by leaving the field.",
+            on_change=save_assessment, args=(region, verdict_key, note_key),
+        )
+
+
+def sidebar_inputs() -> None:
+    """Replace the active session only when uploaded source contents change."""
+    with st.sidebar:
+        workflow = st.radio("Workflow", ("New assessment", "Load assessment"), key="workflow")
+        if workflow == "New assessment":
+            a_upload = st.file_uploader(
+                "Annotation A (.txt / .edus)", type=["txt", "edus"],
+                accept_multiple_files=False, key="upload_a",
+            )
+            b_upload = st.file_uploader(
+                "Annotation B (.txt / .edus)", type=["txt", "edus"],
+                accept_multiple_files=False, key="upload_b",
+            )
+            st.caption("One UTF-8 file per side. Each non-empty line is one EDU.")
+            uploads = (a_upload, b_upload)
+        else:
+            uploads = (st.file_uploader(
+                "Saved session (.json)", type=["json"], accept_multiple_files=False, key="upload_session"
+            ),)
+            st.caption("Restores both embedded annotations and their assessments.")
+
+        signature = (workflow, tuple(
+            (upload.name, sha256(upload.getvalue()).hexdigest()) if upload is not None else None
+            for upload in uploads
+        ))
+        if signature != st.session_state.get("upload_signature"):
+            st.session_state["upload_signature"] = signature
+            for key in ("assessment_session", "comparison_result", "comparison_error"):
+                st.session_state.pop(key, None)
+            st.session_state["difference_index"] = 0
+            st.session_state["session_generation"] = st.session_state.get("session_generation", 0) + 1
+            if all(upload is not None for upload in uploads):
+                try:
+                    if workflow == "New assessment":
+                        session = new_session(*(Source(upload.name, upload.getvalue().decode("utf-8"))
+                                                for upload in uploads))
+                        session.context_edus = st.session_state.get("context_edus", 1)
+                    else:
+                        session = load_session(uploads[0].getvalue())
+                    st.session_state["assessment_session"] = session
+                    st.session_state["comparison_result"] = session.comparison
+                    st.session_state["difference_index"] = session.current_disagreement
+                    st.session_state["context_edus"] = session.context_edus
+                except SessionValidationError as error:
+                    st.session_state["comparison_error"] = f"Session validation failed: {error}"
+                except (ContentMismatchError, BoundaryProjectionError) as error:
+                    st.session_state["comparison_error"] = str(error)
+                except UnicodeDecodeError:
+                    st.session_state["comparison_error"] = "Both annotations must be UTF-8 encoded text files."
+
+        st.session_state.setdefault("context_edus", 1)
+        st.number_input("Context EDUs: ± N", min_value=0, max_value=10, step=1, key="context_edus")
 
 
 def main() -> None:
@@ -103,41 +192,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    with st.expander("Inputs", expanded=st.session_state.get("comparison_result") is None):
-        left_upload, right_upload = st.columns(2, gap="medium")
-        with left_upload:
-            a_upload = st.file_uploader(
-                "Annotation A (.txt)", type=["txt"], accept_multiple_files=False, key="upload_a"
-            )
-        with right_upload:
-            b_upload = st.file_uploader(
-                "Annotation B (.txt)", type=["txt"], accept_multiple_files=False, key="upload_b"
-            )
-        st.caption("One UTF-8 file per side. Each non-empty line is one EDU.")
-
-    ready = a_upload is not None and b_upload is not None
-    a_bytes = a_upload.getvalue() if a_upload is not None else None
-    b_bytes = b_upload.getvalue() if b_upload is not None else None
-    signature = (
-        (a_upload.name, sha256(a_bytes).hexdigest()) if a_upload is not None else None,
-        (b_upload.name, sha256(b_bytes).hexdigest()) if b_upload is not None else None,
-    )
-    # Changing/removing an upload must not leave results from previous files.
-    if signature != st.session_state.get("upload_signature", (None, None)):
-        st.session_state["upload_signature"] = signature
-        st.session_state.pop("comparison_result", None)
-        st.session_state.pop("comparison_error", None)
-        st.session_state["difference_index"] = 0
-        if ready:
-            try:
-                st.session_state["comparison_result"] = compare_uploads(a_bytes, b_bytes)
-            except (ContentMismatchError, BoundaryProjectionError) as error:
-                st.session_state["comparison_error"] = str(error)
-            except UnicodeDecodeError:
-                st.session_state["comparison_error"] = "Both annotations must be UTF-8 encoded text files."
-        # Refresh the Inputs default after success, failure, or removal.
-        # The unchanged signature prevents repeating the comparison.
-        st.rerun()
+    sidebar_inputs()
 
     result = st.session_state.get("comparison_result")
     if result is None:
@@ -146,8 +201,12 @@ def main() -> None:
             st.markdown("**✗ Not comparable**")
             st.error(error)
         else:
-            st.caption("Upload Annotation A and Annotation B in Inputs to begin.")
+            st.caption("Upload Annotation A and Annotation B, or load a saved session, in the sidebar.")
         return
+
+    session = st.session_state["assessment_session"]
+    session.context_edus = st.session_state["context_edus"]
+    names = (session.a_source.filename, session.b_source.filename)
 
     mode = ("Exact reconstruction" if result.canonical_source == "reconstructed"
             else "Whitespace-normalized")
@@ -172,23 +231,33 @@ def main() -> None:
             horizontal=True, horizontal_alignment="center", vertical_alignment="center", gap="small"
         ):
             st.button(
-                "←", help="Previous difference", width="content",
+                "←", help="Previous disagreement", width="content",
                 disabled=index == 0, key="previous_difference",
                 on_click=move_difference, args=(-1, total),
             )
-            st.markdown(f"**Difference {index + 1} / {total}**", width="content")
+            st.markdown(f"**Disagreement {index + 1} / {total}**", width="content")
             st.button(
-                "→", help="Next difference", width="content",
+                "→", help="Next disagreement", width="content",
                 disabled=index == total - 1, key="next_difference",
                 on_click=move_difference, args=(1, total),
             )
         region = result.disagreement_regions[index]
-        show_annotations(result, (a_upload.name, b_upload.name), region)
+        show_annotations(result, names, region, context_edus=session.context_edus)
+        show_assessment(region)
     else:
         st.info("No segmentation differences. The full annotations are available below.")
 
+    session.current_disagreement = st.session_state["difference_index"]
+    st.caption(f"Assessed {len(session.assessments)} / {len(result.disagreement_regions)}")
+    with st.sidebar:
+        st.download_button(
+            "Export session JSON", export_session(session).encode("utf-8"),
+            file_name="edu_assessment_session.json", mime="application/json", on_click="ignore",
+        )
+        st.caption("Includes the original A/B contents and all current assessments.")
+
     with st.expander("Full annotations", expanded=False):
-        show_annotations(result, (a_upload.name, b_upload.name), region, full=True)
+        show_annotations(result, names, region, full=True)
 
     with st.expander("Comparison summary", expanded=False):
         for metrics in (

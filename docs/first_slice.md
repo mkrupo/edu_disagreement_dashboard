@@ -4,7 +4,7 @@ This is the active comparison-core contract. The [original project handoff](EDU_
 
 ## Input and coordinates
 
-- Two UTF-8 annotation files, A and B, with one non-empty line per EDU.
+- Two UTF-8 annotation files, A and B, with one non-empty line per EDU. `.txt` and `.edus` use the identical line parser.
 - Ordinary Python text-file handling supports LF and CRLF line endings. Remove only line terminators, preserving all other characters. Only literally empty lines are ignored; whitespace-only lines remain EDUs.
 - `ParsedEDU(index, text, line_number)` preserves zero-based EDU indices and one-based original source line numbers.
 - Concatenating EDU texts without separators reconstructs each annotation's text.
@@ -92,12 +92,59 @@ else:
 - Unicode normalization is intentionally absent: `é` and `e` plus combining acute accent are different reconstructed texts. Combining marks and emoji each contribute their actual Python code-point lengths.
 - Successful comparisons on both paths have `warnings: []`; provenance identifies the fallback without scores or taxonomies. Content mismatches and collapsed projections raise instead of returning apparent disagreements.
 - The comparison core has zero runtime dependencies and lives in `src/edu_disagreement/`. The full application requires Streamlit; pytest is a development dependency.
-- The Streamlit UI lives separately in `app/streamlit_app.py` and calls the existing parser/comparator. No CLI, raw-text alignment, fuzzy alignment, normalization beyond whitespace removal, scores, diagnoses, guideline processing, LLM/RAG, persistence, or database is implemented.
+- The Streamlit UI lives separately in `app/streamlit_app.py` and calls the existing parser/comparator. Human assessments and portable session JSON are implemented separately in `sessions.py`; the comparison contract is unchanged. No CLI, raw-text/fuzzy alignment, normalization beyond whitespace removal, scores, diagnoses, guideline processing, LLM/RAG, persistent server storage, or database is implemented.
 
 Tests cover the original scenarios, exact whitespace and newline preservation, empty inputs, minimal JSON serialization, and exhaustive A/B symmetry and region overlap checks for all segmentations of a tiny document. Fallback tests cover trailing spaces, separators replaced by EDU newlines, multiple whitespace differences, Unicode whitespace/code-point projection, shared boundaries, A/B symmetry, retained EDU text, structural anchors, content rejection, and collapsed-boundary rejection.
 
 ## Local inspection interface
 
-Launch with `uv run streamlit run app/streamlit_app.py`. Upload one `.txt` file per side in Inputs; comparison runs automatically. A compact comparability status and mode explanation appear above Previous/Next difference navigation. Changing either upload clears old results and resets selection to difference 1.
+Launch with `uv run streamlit run app/streamlit_app.py`. In the sidebar, choose New assessment and upload one `.txt` or `.edus` file per side, or choose Load assessment and upload only a saved session `.json`. Comparison runs automatically. A compact comparability status and mode explanation appear above centered Previous/Next Disagreement navigation. Changing either source clears old results and assessments and resets selection to disagreement 1.
 
-The main A-left/B-right view shows selected EDUs plus one preceding and one following EDU where available, using only the region's EDU indices. Only selected EDUs are highlighted; original text and source-line information are retained. Inputs defaults to collapsed after a successful comparison. Full annotations, comparison summary, and developer diagnostics are separate collapsed sections, with canonical text and JSON at the bottom. With no differences, the full annotations remain available without navigation controls.
+The main A-left/B-right view shows selected EDUs plus context from the sidebar setting (0–10 EDUs per side, default 1), using only region EDU indices. Context changes only rendering, not comparison. Only selected EDUs are highlighted; original text and source-line information are retained. Full annotations, comparison summary, and developer diagnostics remain collapsed, with canonical text and comparison JSON at the bottom. With no disagreements, full annotations and session export remain available without navigation or verdict controls.
+
+## Human assessments and portable sessions
+
+Under each local comparison, answer **Which segmentation is defensible?** with `a_only` (A defensible, B not), `both` (both defensible), `b_only` (B defensible, A not), `neither` (an alternative may be needed), or `unresolved` (inspected but cannot decide). No assessment record means unassessed; unresolved counts toward progress. Both carries no automatic HLV label. Selection saves immediately without advancing. Optional notes are enabled after choosing a verdict; Streamlit applies note edits on leaving the field or Ctrl+Enter. Revisiting a region restores its verdict and note.
+
+Export session JSON in the sidebar creates a self-contained UTF-8 file. It embeds both original decoded sources exactly, including whitespace and line endings, original filenames, and SHA-256 of each content encoded as UTF-8. Filesystem paths are unnecessary. Session JSON contains no cached `ComparisonResult`. This valid synthetic example compares A = `a\nb` with B = `ab`:
+
+```json
+{
+  "schema_version": 1,
+  "sources": {
+    "A": {
+      "filename": "a.edus",
+      "sha256": "7e18f737311b2dc3b2f269dd78396b0351f14fb66efa879f768cb23181883c78",
+      "content": "a\nb"
+    },
+    "B": {
+      "filename": "b.txt",
+      "sha256": "fb8e20fc2e4c3f248c60c39bd652f3c1347298bb977b8b4d5903b85055620603",
+      "content": "ab"
+    }
+  },
+  "state": {"current_disagreement": 0, "context_edus": 1},
+  "assessments": [
+    {
+      "start_offset": 0,
+      "end_offset": 2,
+      "a_edu_indices": [0, 1],
+      "b_edu_indices": [0],
+      "verdict": "both",
+      "note": null
+    }
+  ]
+}
+```
+
+Loading validates UTF-8 JSON, schema version 1, required source fields and hashes, then reruns the existing parser/comparator on embedded sources. Each assessment must have a supported verdict, text/null note, integer offsets and index arrays, and an exact matching recomputed region identity. Duplicate region assessments, duplicate JSON keys, hash mismatches, non-comparable sources, and unmatched identities are rejected clearly. Regions without assessments are valid. `current_disagreement` is zero-based convenience state: clamp out-of-range integers; invalid/missing positions default to zero. Valid context values 0–10 restore; invalid/missing context defaults to 1. UI state is never assessment identity.
+
+TODO: future formats should be input adapters into `ParsedEDU`, keeping the comparator independent of file format:
+
+```text
+.txt / .edus → line parser ┐
+.rs3 → future RST adapter ├→ ParsedEDU → comparator
+other formats → adapter  ┘
+```
+
+Only the line parser is implemented. Sessions are downloaded/uploaded files, with no database, user accounts, or persistent server storage. Private sources and exported private sessions must not enter committed tests or documentation.

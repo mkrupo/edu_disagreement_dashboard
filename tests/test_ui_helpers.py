@@ -6,6 +6,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from edu_disagreement import ParsedEDU
+from edu_disagreement.sessions import VERDICTS, export_session
 
 
 helpers = runpy.run_path(str(Path(__file__).parents[1] / "app" / "streamlit_app.py"))
@@ -106,11 +107,11 @@ def test_automatic_comparison_navigation_and_upload_replacement():
     assert not at.button(key="next_difference").disabled
     assert at.button(key="previous_difference").label == "←"
     assert at.button(key="next_difference").label == "→"
-    assert at.button(key="previous_difference").proto.help == "Previous difference"
-    assert at.button(key="next_difference").proto.help == "Next difference"
+    assert at.button(key="previous_difference").proto.help == "Previous disagreement"
+    assert at.button(key="next_difference").proto.help == "Next disagreement"
     assert not at.selectbox
     assert all(not expander.proto.expanded for expander in at.expander)
-    assert any("Difference 1 / 2" in element.value for element in at.markdown)
+    assert any("Disagreement 1 / 2" in element.value for element in at.markdown)
 
     at.button(key="next_difference").click().run()
     assert at.session_state["difference_index"] == 1
@@ -131,7 +132,7 @@ def test_automatic_comparison_navigation_and_upload_replacement():
     assert at.session_state["difference_index"] == 0
     assert "comparison_result" not in at.session_state
     assert not at.button and not at.metric
-    assert at.expander[0].proto.expanded
+    assert not at.expander
 
 
 @pytest.mark.parametrize(
@@ -157,7 +158,8 @@ def test_uploaders_accept_one_text_file_each():
     assert len(at.file_uploader) == 2
     for uploader in at.file_uploader:
         assert uploader.accept_multiple_files is False
-        assert uploader.allowed_type == [".txt"]
+        assert uploader.allowed_type == [".txt", ".edus"]
+    assert len(at.sidebar.file_uploader) == 2
     at.file_uploader(key="upload_a").upload("a.txt", b"a", "text/plain").run()
     assert "comparison_result" not in at.session_state
     assert not at.button
@@ -173,9 +175,12 @@ def test_zero_difference_case(a, b):
     assert any("Comparable" in element.value for element in at.markdown)
     assert len(at.metric) == 6
     assert [e.label for e in at.expander] == [
-        "Inputs", "Full annotations", "Comparison summary", "Developer diagnostics"
+        "Full annotations", "Comparison summary", "Developer diagnostics"
     ]
     assert all(not e.proto.expanded for e in at.expander)
+    assert not at.segmented_control
+    assert any(c.value == "Assessed 0 / 0" for c in at.caption)
+    assert len(at.get("download_button")) == 1
 
 
 @pytest.mark.parametrize(
@@ -195,3 +200,110 @@ def test_failed_comparison_clears_results_and_displays_error(a, b, message):
     assert not at.metric
     at.run()
     assert len(at.error) == 1  # Error remains accessible on later reruns.
+
+
+@pytest.mark.parametrize(("size", "expected"), [(0, (3,)), (1, (2, 3, 4)), (3, tuple(range(7))),
+                                                 (10, tuple(range(7)))])
+def test_parameterized_context(size, expected):
+    edus = tuple(ParsedEDU(i, str(i), i + 1) for i in range(7))
+    assert helpers["local_context"](edus, (3,), size) == tuple(edus[i] for i in expected)
+
+
+@pytest.mark.parametrize("verdict", VERDICTS)
+def test_each_verdict_is_saved_immediately_without_advancing(verdict):
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
+    session = at.session_state["assessment_session"]
+    region = session.comparison.disagreement_regions[0]
+    assert region not in session.assessments
+    assert at.segmented_control[0].value is None
+    assert at.text_area[0].disabled
+
+    at.segmented_control[0].set_value(verdict).run()
+    assert not at.exception
+    assert session.assessments[region].verdict == verdict
+    assert at.session_state["difference_index"] == 0
+    assert any(c.value == "Assessed 1 / 2" for c in at.caption)
+    assert not at.text_area[0].disabled
+
+
+def test_assessments_and_independent_notes_survive_navigation_and_json_only_reload():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
+    at.segmented_control[0].set_value("both").run()
+    at.text_area[0].set_value("First note: é\nsecond line").run()
+    at.button(key="next_difference").click().run()
+    assert at.segmented_control[0].value is None
+    assert at.text_area[0].value == ""
+    at.segmented_control[0].set_value("unresolved").run()
+    at.text_area[0].set_value("Independent second note").run()
+    at.number_input(key="context_edus").set_value(3).run()
+    original_comparison = at.session_state["comparison_result"]
+    at.number_input(key="context_edus").set_value(4).run()
+    assert at.session_state["comparison_result"] is original_comparison
+    at.button(key="previous_difference").click().run()
+    assert at.segmented_control[0].value == "both"
+    assert at.text_area[0].value == "First note: é\nsecond line"
+    at.button(key="next_difference").click().run()
+    assert at.segmented_control[0].value == "unresolved"
+    assert at.text_area[0].value == "Independent second note"
+    assert any(c.value == "Assessed 2 / 2" for c in at.caption)
+    payload = export_session(at.session_state["assessment_session"]).encode("utf-8")
+
+    restored = AppTest.from_file(APP_PATH).run()
+    restored.radio(key="workflow").set_value("Load assessment").run()
+    assert len(restored.file_uploader) == 1
+    assert restored.file_uploader[0].accept_multiple_files is False
+    assert restored.file_uploader[0].allowed_type == [".json"]
+    restored.file_uploader(key="upload_session").upload("session.json", payload, "application/json").run()
+    assert not restored.exception and not restored.error
+    assert len(restored.file_uploader) == 1  # No separate A/B uploads.
+    assert restored.session_state["comparison_result"] == original_comparison
+    assert restored.session_state["comparison_result"] is not original_comparison
+    assert restored.session_state["difference_index"] == 1
+    assert restored.number_input(key="context_edus").value == 4
+    assert restored.segmented_control[0].value == "unresolved"
+    assert restored.text_area[0].value == "Independent second note"
+    restored.button(key="previous_difference").click().run()
+    assert restored.segmented_control[0].value == "both"
+    assert restored.text_area[0].value == "First note: é\nsecond line"
+
+
+def test_deselecting_verdict_means_unassessed():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nb", b"ab")
+    at.segmented_control[0].set_value("unresolved").run()
+    assert len(at.session_state["assessment_session"].assessments) == 1
+    at.segmented_control[0].set_value(None).run()
+    assert not at.exception
+    assert not at.session_state["assessment_session"].assessments
+    assert any(c.value == "Assessed 0 / 1" for c in at.caption)
+
+
+def test_upload_replacement_discards_previous_assessments():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
+    at.segmented_control[0].set_value("a_only").run()
+    at.text_area[0].set_value("Previous source").run()
+    at.file_uploader(key="upload_a").upload("replacement.edus", b"abc\nde\nf", "text/plain").run()
+    assert not at.exception
+    assert at.session_state["difference_index"] == 0
+    assert not at.session_state["assessment_session"].assessments
+    assert at.segmented_control[0].value is None
+    assert at.text_area[0].value == ""
+
+
+def test_edus_extension_uses_identical_parser():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a \r\nb", b"ab")
+    comparison = at.session_state["comparison_result"]
+    at.file_uploader(key="upload_a").upload("a.edus", b"a \r\nb", "text/plain")
+    at.file_uploader(key="upload_b").upload("b.edus", b"ab", "text/plain").run()
+    assert at.session_state["comparison_result"] == comparison
+    assert at.session_state["assessment_session"].a_source.content == "a \r\nb"
+
+
+def test_invalid_loaded_session_clears_previous_comparison_and_shows_error():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nb", b"ab")
+    at.radio(key="workflow").set_value("Load assessment").run()
+    at.file_uploader(key="upload_session").upload("bad.json", b"{", "application/json").run()
+    assert not at.exception
+    assert "comparison_result" not in at.session_state
+    assert "assessment_session" not in at.session_state
+    assert "Session validation failed" in at.error[0].value
+    assert not at.get("download_button")

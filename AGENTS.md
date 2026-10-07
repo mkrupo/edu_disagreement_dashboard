@@ -24,9 +24,11 @@ Read [the current comparison contract](docs/first_slice.md) and [the project han
 - Group all differences between consecutive shared anchors into one region and record ordered, overlapping EDU indices.
 - Export the small JSON schema documented in `docs/first_slice.md`, with sorted boundaries and regions in document order.
 
-The local Streamlit interface is a thin inspection layer: upload exactly one A/B `.txt` file per side in Inputs and compare automatically. Show comparability and a subdued mode description; navigate with Previous/Next buttons and a zero-based difference index in session state. Upload replacement/removal clears old results and resets navigation. The main symmetric A/B view shows the selected EDUs plus one neighbor on each side, calculated from EDU indices without canonical offsets; only selected EDUs are highlighted. Keep full annotations, summary counts, and developer diagnostics in collapsed sections. Inputs defaults to collapsed after success. Escape uploaded text before HTML rendering and preserve its whitespace. Label whitespace-normalized canonical text as a comparison representation. Show comparator errors without attempting repairs.
+The local Streamlit interface is a thin comparison and assessment layer. Sidebar workflows are New assessment (one A/B `.txt` or `.edus` file per side, identical parser semantics) and Load assessment (one self-contained session JSON). Compare automatically; show comparability and a subdued mode description. Keep centered Previous/Next navigation labeled Disagreement, with a zero-based index in session state. Upload replacement/removal clears old results and assessments and resets navigation. The symmetric local A/B view uses region EDU indices plus configurable context (0–10 neighbors per side, default 1); context changes must not recompute the comparison. Only selected EDUs are highlighted. Keep full annotations, summary counts, and developer diagnostics collapsed. Escape uploaded text before HTML rendering, preserve its whitespace, and label normalized canonical text as a derived representation. Show comparator/session errors without repairs.
 
-Do not add complex JavaScript interactions, raw-text alignment, fuzzy alignment, normalization beyond the explicit whitespace fallback, token offsets, agreement/confidence scores, disagreement labels, guideline processing, RAG, LLM calls, databases, or persistence in this slice.
+Assessments use exactly `a_only`, `both`, `b_only`, `neither`, or `unresolved`, with optional notes. Absence is unassessed; unresolved counts as assessed. Both does not imply HLV. Anchor every record to the full canonical span and both EDU-index tuples, never just navigation order. Sessions embed exact decoded UTF-8 source contents, original filenames, and SHA-256 hashes; retain line endings in embedded sources. On import, validate schema/hashes, recompute with the existing parser/comparator, and require exact assessment identity matches. Never store or trust cached comparison results or filesystem paths for restoration. See [session schema and workflow](docs/first_slice.md#human-assessments-and-portable-sessions).
+
+Do not add complex JavaScript interactions, raw-text/fuzzy alignment, normalization beyond the explicit whitespace fallback, token offsets, agreement/confidence scores, HLV/error diagnoses, adjudicated segmentations, guideline processing, RAG, LLM calls, databases, or persistent server storage. Future input formats must adapt into `ParsedEDU`; `.rs3` parsing is deferred.
 
 ## Layout and workflow
 
@@ -34,7 +36,8 @@ Do not add complex JavaScript interactions, raw-text alignment, fuzzy alignment,
 - `src/edu_disagreement/parsing.py`: exact line parsing and reconstruction.
 - `src/edu_disagreement/comparison.py`: boundary comparison and region grouping.
 - `src/edu_disagreement/__init__.py`: public Python API.
-- `app/streamlit_app.py`: local UI and temporary-upload adapter, calling the existing file parser/comparator without duplicating scientific logic.
+- `src/edu_disagreement/sessions.py`: Streamlit-independent assessments, source preservation, and validated portable JSON sessions; calls the unchanged parser/comparator via temporary files.
+- `app/streamlit_app.py`: local comparison/assessment UI, without duplicated scientific logic.
 - `tests/`: small readable examples that verify the scientific contract.
 - `pyproject.toml`: package metadata and test dependency.
 
@@ -51,6 +54,6 @@ git diff --check
 
 For scientific logic changes, test relevant edge cases and invariants: exact whitespace, line numbers, Unicode offsets, A/B symmetry, mismatch rejection, structural anchors, region grouping, and collapsed-boundary rejection. Keep output deterministic. Do not introduce normalization beyond the documented whitespace fallback to make a failing case pass. Private `data/` is ignored by Git; both `short/` and `maximum/` samples have been deliberately validated and can be used for requested checks. Keep private content out of committed fixtures and docs.
 
-For UI changes, keep comparator tests unchanged, run the full suite, and use Streamlit AppTest or a local browser to check local context, exact highlights, navigation endpoints, errors, one-file-per-side uploads, resets, and zero-difference cases. Check early, middle, and late differences in a maximum sample. Native columns and the optional full-annotation scroll containers do not synchronize source-text positions across A/B; local panels grow naturally to fit their context.
+For UI changes, keep comparator tests unchanged, run the full suite, and check parameterized context, highlights, navigation, errors, one-file uploads, resets, and zero-disagreement cases. Verify verdict/note persistence and JSON-only restoration, including exact sources, hashes, and region identities. Private session exports must stay outside committed fixtures/docs. Check early, middle, and late disagreements in a maximum sample. Native columns and full-annotation scroll containers do not synchronize source positions; local panels grow naturally to fit their context.
 
 Report changed files, data flow, test results, specification ambiguities/decisions, and concrete input/output examples when completing implementation work.
