@@ -151,32 +151,37 @@ def main() -> None:
 
     mode = ("Exact reconstruction" if result.canonical_source == "reconstructed"
             else "Whitespace-normalized")
-    status, explanation = st.columns([4, 1])
-    with status:
-        st.markdown(f"**✓ Comparable** · :gray[{mode}]")
-    with explanation:
-        with st.popover("About modes"):
-            st.markdown("**Exact reconstruction**")
-            st.write("The two annotations reconstruct to exactly the same text after EDU line breaks are removed.")
-            st.markdown("**Whitespace-normalized**")
-            st.write("The annotations differ only in whitespace placement. Whitespace is ignored "
-                     "for boundary comparison, but the original annotation text is preserved and displayed unchanged.")
+    st.markdown(
+        f"**✓ Comparable** · :gray[{mode}]",
+        width="content",
+        help=(
+            "**Exact reconstruction**\n\n"
+            "The two annotations reconstruct to exactly the same text after EDU line breaks are removed.\n\n"
+            "**Whitespace-normalized**\n\n"
+            "The annotations differ only in whitespace placement. Whitespace is ignored for boundary "
+            "comparison, while original EDU text is preserved unchanged."
+        ),
+    )
 
     region = None
     if result.disagreement_regions:
         total = len(result.disagreement_regions)
         index = max(0, min(st.session_state.get("difference_index", 0), total - 1))
         st.session_state["difference_index"] = index
-        previous, counter, following = st.columns([1, 2, 1])
-        previous.button(
-            "← Previous", disabled=index == 0, key="previous_difference",
-            on_click=move_difference, args=(-1, total),
-        )
-        counter.markdown(f"**Difference {index + 1} / {total}**")
-        following.button(
-            "Next →", disabled=index == total - 1, key="next_difference",
-            on_click=move_difference, args=(1, total),
-        )
+        with st.container(
+            horizontal=True, horizontal_alignment="center", vertical_alignment="center", gap="small"
+        ):
+            st.button(
+                "←", help="Previous difference", width="content",
+                disabled=index == 0, key="previous_difference",
+                on_click=move_difference, args=(-1, total),
+            )
+            st.markdown(f"**Difference {index + 1} / {total}**", width="content")
+            st.button(
+                "→", help="Next difference", width="content",
+                disabled=index == total - 1, key="next_difference",
+                on_click=move_difference, args=(1, total),
+            )
         region = result.disagreement_regions[index]
         show_annotations(result, (a_upload.name, b_upload.name), region)
     else:

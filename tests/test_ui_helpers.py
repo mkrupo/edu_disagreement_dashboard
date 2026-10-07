@@ -104,6 +104,10 @@ def test_automatic_comparison_navigation_and_upload_replacement():
     assert at.session_state["difference_index"] == 0
     assert at.button(key="previous_difference").disabled
     assert not at.button(key="next_difference").disabled
+    assert at.button(key="previous_difference").label == "←"
+    assert at.button(key="next_difference").label == "→"
+    assert at.button(key="previous_difference").proto.help == "Previous difference"
+    assert at.button(key="next_difference").proto.help == "Next difference"
     assert not at.selectbox
     assert all(not expander.proto.expanded for expander in at.expander)
     assert any("Difference 1 / 2" in element.value for element in at.markdown)
@@ -128,6 +132,23 @@ def test_automatic_comparison_navigation_and_upload_replacement():
     assert "comparison_result" not in at.session_state
     assert not at.button and not at.metric
     assert at.expander[0].proto.expanded
+
+
+@pytest.mark.parametrize(
+    ("a", "b", "mode"),
+    [(b"a\nb", b"ab", "Exact reconstruction"),
+     (b"a \nb", b"ab", "Whitespace-normalized")],
+)
+def test_comparison_mode_explanation_is_accessible_in_status_help(a, b, mode):
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), a, b)
+    status = next(element for element in at.markdown if element.value.startswith("**✓ Comparable**"))
+
+    assert mode in status.value
+    assert "**Exact reconstruction**" in status.proto.help
+    assert "exactly the same text after EDU line breaks are removed" in status.proto.help
+    assert "**Whitespace-normalized**" in status.proto.help
+    assert "Whitespace is ignored for boundary comparison" in status.proto.help
+    assert "original EDU text is preserved unchanged" in status.proto.help
 
 
 def test_uploaders_accept_one_text_file_each():
