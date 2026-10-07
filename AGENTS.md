@@ -24,7 +24,7 @@ Read [the current comparison contract](docs/first_slice.md) and [the project han
 - Group all differences between consecutive shared anchors into one region and record ordered, overlapping EDU indices.
 - Export the small JSON schema documented in `docs/first_slice.md`, with sorted boundaries and regions in document order.
 
-The local Streamlit interface is a thin inspection layer: upload A/B `.txt` files, show original EDUs in symmetric columns, select a disagreement region, and optionally inspect canonical diagnostics. Escape uploaded text before HTML rendering and preserve its whitespace. Keep canonical text secondary and label whitespace-normalized text as a comparison representation. Show comparator errors without attempting repairs.
+The local Streamlit interface is a thin inspection layer: upload exactly one A/B `.txt` file per side in Inputs and compare automatically. Show comparability and a subdued mode description; navigate with Previous/Next buttons and a zero-based difference index in session state. Upload replacement/removal clears old results and resets navigation. The main symmetric A/B view shows the selected EDUs plus one neighbor on each side, calculated from EDU indices without canonical offsets; only selected EDUs are highlighted. Keep full annotations, summary counts, and developer diagnostics in collapsed sections. Inputs defaults to collapsed after success. Escape uploaded text before HTML rendering and preserve its whitespace. Label whitespace-normalized canonical text as a comparison representation. Show comparator errors without attempting repairs.
 
 Do not add complex JavaScript interactions, raw-text alignment, fuzzy alignment, normalization beyond the explicit whitespace fallback, token offsets, agreement/confidence scores, disagreement labels, guideline processing, RAG, LLM calls, databases, or persistence in this slice.
 
@@ -49,8 +49,8 @@ uv run streamlit run app/streamlit_app.py
 git diff --check
 ```
 
-For scientific logic changes, test relevant edge cases and invariants: exact whitespace, line numbers, Unicode offsets, A/B symmetry, mismatch rejection, structural anchors, region grouping, and collapsed-boundary rejection. Keep output deterministic. Do not introduce normalization beyond the documented whitespace fallback to make a failing case pass. Private `data/` is ignored by Git; use only `short/` samples for requested real-data checks and keep private content out of committed fixtures and docs.
+For scientific logic changes, test relevant edge cases and invariants: exact whitespace, line numbers, Unicode offsets, A/B symmetry, mismatch rejection, structural anchors, region grouping, and collapsed-boundary rejection. Keep output deterministic. Do not introduce normalization beyond the documented whitespace fallback to make a failing case pass. Private `data/` is ignored by Git; both `short/` and `maximum/` samples have been deliberately validated and can be used for requested checks. Keep private content out of committed fixtures and docs.
 
-For UI changes, keep comparator tests unchanged, run the full suite, and use Streamlit AppTest or a local browser to check region selection, exact highlights, errors, and upload changes. Streamlit's native columns and independent scroll containers do not synchronize source-text positions across A/B.
+For UI changes, keep comparator tests unchanged, run the full suite, and use Streamlit AppTest or a local browser to check local context, exact highlights, navigation endpoints, errors, one-file-per-side uploads, resets, and zero-difference cases. Check early, middle, and late differences in a maximum sample. Native columns and the optional full-annotation scroll containers do not synchronize source-text positions across A/B; local panels grow naturally to fit their context.
 
 Report changed files, data flow, test results, specification ambiguities/decisions, and concrete input/output examples when completing implementation work.

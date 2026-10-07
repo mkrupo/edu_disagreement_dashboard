@@ -1,6 +1,6 @@
 # Comparison core: exact reconstruction and whitespace fallback
 
-This is the active implementation contract. The [original project handoff](EDU_disagreement_dashboard_handoff.md) describes broader milestones; raw-text alignment and visualization are deferred.
+This is the active comparison-core contract. The [original project handoff](EDU_disagreement_dashboard_handoff.md) describes broader milestones. A local Streamlit inspection interface is implemented; raw-text alignment remains deferred.
 
 ## Input and coordinates
 
@@ -91,7 +91,13 @@ else:
 - Whitespace-only lines count as EDUs because trimming would alter source content.
 - Unicode normalization is intentionally absent: `é` and `e` plus combining acute accent are different reconstructed texts. Combining marks and emoji each contribute their actual Python code-point lengths.
 - Successful comparisons on both paths have `warnings: []`; provenance identifies the fallback without scores or taxonomies. Content mismatches and collapsed projections raise instead of returning apparent disagreements.
-- Runtime dependencies are zero; pytest is a development dependency. Scientific logic lives in `src/edu_disagreement/`.
-- No UI, CLI, raw-text alignment, fuzzy alignment, normalization beyond whitespace removal, scores, diagnoses, guideline processing, LLM/RAG, persistence, or database is part of this slice.
+- The comparison core has zero runtime dependencies and lives in `src/edu_disagreement/`. The full application requires Streamlit; pytest is a development dependency.
+- The Streamlit UI lives separately in `app/streamlit_app.py` and calls the existing parser/comparator. No CLI, raw-text alignment, fuzzy alignment, normalization beyond whitespace removal, scores, diagnoses, guideline processing, LLM/RAG, persistence, or database is implemented.
 
 Tests cover the original scenarios, exact whitespace and newline preservation, empty inputs, minimal JSON serialization, and exhaustive A/B symmetry and region overlap checks for all segmentations of a tiny document. Fallback tests cover trailing spaces, separators replaced by EDU newlines, multiple whitespace differences, Unicode whitespace/code-point projection, shared boundaries, A/B symmetry, retained EDU text, structural anchors, content rejection, and collapsed-boundary rejection.
+
+## Local inspection interface
+
+Launch with `uv run streamlit run app/streamlit_app.py`. Upload one `.txt` file per side in Inputs; comparison runs automatically. A compact comparability status and mode explanation appear above Previous/Next difference navigation. Changing either upload clears old results and resets selection to difference 1.
+
+The main A-left/B-right view shows selected EDUs plus one preceding and one following EDU where available, using only the region's EDU indices. Only selected EDUs are highlighted; original text and source-line information are retained. Inputs defaults to collapsed after a successful comparison. Full annotations, comparison summary, and developer diagnostics are separate collapsed sections, with canonical text and JSON at the bottom. With no differences, the full annotations remain available without navigation controls.
