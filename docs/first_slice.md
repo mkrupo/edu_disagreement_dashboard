@@ -106,7 +106,7 @@ The main A-left/B-right view shows selected EDUs plus context from the sidebar s
 
 Under each local comparison, answer **Which segmentation is defensible?** with `a_only` (A defensible, B not), `both` (both defensible), `b_only` (B defensible, A not), `neither` (an alternative may be needed), or `unresolved` (inspected but cannot decide). No assessment record means unassessed; unresolved counts toward progress. Both carries no automatic HLV label. Selection saves immediately without advancing. Optional notes are enabled after choosing a verdict; Streamlit applies note edits on leaving the field or Ctrl+Enter. Revisiting a region restores its verdict and note.
 
-Export session JSON in the sidebar creates a self-contained UTF-8 file. It embeds both original decoded sources exactly, including whitespace and line endings, original filenames, and SHA-256 of each content encoded as UTF-8. Filesystem paths are unnecessary. Session JSON contains no cached `ComparisonResult`. This valid synthetic example compares A = `a\nb` with B = `ab`:
+Export session JSON in the sidebar saves any pending note edit and prepares a self-contained UTF-8 file. Click Download session JSON in the native dialog, then close the dialog to resume editing. This separates saving from downloading: a direct download can race the note widget's rerun and serve older bytes. The dialog contains an immutable snapshot and keeps the note editor out of reach while downloading. It embeds both original decoded sources exactly, including whitespace and line endings, original filenames, and SHA-256 of each content encoded as UTF-8. Filesystem paths are unnecessary. Session JSON contains no cached `ComparisonResult`. This valid synthetic example compares A = `a\nb` with B = `ab`:
 
 ```json
 {

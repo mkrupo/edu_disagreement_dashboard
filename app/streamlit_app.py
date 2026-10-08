@@ -95,7 +95,7 @@ def save_assessment(region: DisagreementRegion, verdict_key: str, note_key: str)
     )
 
 
-def show_assessment(region: DisagreementRegion) -> None:
+def show_assessment(region: DisagreementRegion) -> tuple[str, str]:
     session = st.session_state["assessment_session"]
     assessment = session.assessments.get(region)
     identity = sha256(repr(region).encode("utf-8")).hexdigest()
@@ -118,9 +118,22 @@ def show_assessment(region: DisagreementRegion) -> None:
         st.text_area(
             "Note (optional)", key=note_key, width=650, height=100,
             disabled=st.session_state[verdict_key] is None,
-            help="Choose a verdict to add a note. Apply edits with Ctrl+Enter or by leaving the field.",
+            help="Choose a verdict to add a note. Edits save on leaving the field, Ctrl+Enter, "
+                 "or Export session JSON. Export saves the note before opening the download dialog.",
             on_change=save_assessment, args=(region, verdict_key, note_key),
         )
+    return verdict_key, note_key
+
+
+@st.dialog("Export session JSON", on_dismiss="rerun")
+def show_export_dialog(payload: bytes) -> None:
+    """Offer an immutable export while the note editor is behind a modal."""
+    st.caption("Your current note is saved in this export. Download the JSON, "
+               "then close this dialog to continue editing.")
+    st.download_button(
+        "Download session JSON", payload, file_name="edu_assessment_session.json",
+        mime="application/json", on_click="ignore",
+    )
 
 
 def sidebar_inputs() -> None:
@@ -223,6 +236,7 @@ def main() -> None:
     )
 
     region = None
+    assessment_widgets = None
     if result.disagreement_regions:
         total = len(result.disagreement_regions)
         index = max(0, min(st.session_state.get("difference_index", 0), total - 1))
@@ -243,17 +257,19 @@ def main() -> None:
             )
         region = result.disagreement_regions[index]
         show_annotations(result, names, region, context_edus=session.context_edus)
-        show_assessment(region)
+        assessment_widgets = show_assessment(region)
     else:
         st.info("No segmentation differences. The full annotations are available below.")
 
     session.current_disagreement = st.session_state["difference_index"]
     st.caption(f"Assessed {len(session.assessments)} / {len(result.disagreement_regions)}")
     with st.sidebar:
-        st.download_button(
-            "Export session JSON", export_session(session).encode("utf-8"),
-            file_name="edu_assessment_session.json", mime="application/json", on_click="ignore",
-        )
+        if st.button("Export session JSON", key="export_session"):
+            # A normal button rerun receives pending note edits before creating
+            # download bytes. A direct download starts before that rerun ends.
+            if region is not None:
+                save_assessment(region, *assessment_widgets)
+            show_export_dialog(export_session(session).encode("utf-8"))
         st.caption("Includes the original A/B contents and all current assessments.")
 
     with st.expander("Full annotations", expanded=False):

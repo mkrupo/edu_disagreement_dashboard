@@ -3,6 +3,7 @@ from pathlib import Path
 import runpy
 
 import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from edu_disagreement import ParsedEDU
@@ -170,7 +171,8 @@ def test_zero_difference_case(a, b):
     at = upload_pair(AppTest.from_file(APP_PATH).run(), a, b)
 
     assert not at.exception and not at.error
-    assert not at.button and not at.selectbox
+    assert [button.key for button in at.button] == ["export_session"]
+    assert not at.selectbox
     assert any("No segmentation differences" in info.value for info in at.info)
     assert any("Comparable" in element.value for element in at.markdown)
     assert len(at.metric) == 6
@@ -180,6 +182,9 @@ def test_zero_difference_case(a, b):
     assert all(not e.proto.expanded for e in at.expander)
     assert not at.segmented_control
     assert any(c.value == "Assessed 0 / 0" for c in at.caption)
+    assert not at.get("download_button")
+    at.button(key="export_session").click().run()
+    assert not at.exception
     assert len(at.get("download_button")) == 1
 
 
@@ -307,3 +312,97 @@ def test_invalid_loaded_session_clears_previous_comparison_and_shows_error():
     assert "assessment_session" not in at.session_state
     assert "Session validation failed" in at.error[0].value
     assert not at.get("download_button")
+
+
+@pytest.fixture
+def download_payloads(monkeypatch):
+    """Capture the actual bytes offered to Streamlit, retaining native controls."""
+    payloads = []
+    native_download = st.download_button
+
+    def download(label, data, **kwargs):
+        payloads.append(data)
+        return native_download(label, data, **kwargs)
+
+    monkeypatch.setattr(st, "download_button", download)
+    return payloads
+
+
+def test_export_commits_pending_note_before_offering_download(download_payloads):
+    from edu_disagreement.sessions import load_session
+
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
+    at.segmented_control[0].set_value("both").run()
+    at.text_area[0].set_value("original note").run()
+    at.button(key="next_difference").click().run()
+    at.segmented_control[0].set_value("unresolved").run()
+    at.text_area[0].set_value("independent other note").run()
+    at.button(key="previous_difference").click().run()
+    session = at.session_state["assessment_session"]
+    first, second = session.comparison.disagreement_regions
+    other = session.assessments[second]
+    comparison = session.comparison
+    assert not download_payloads and not at.get("download_button")
+
+    # Pending note and Export arrive in one interaction, with no prior .run().
+    at.text_area[0].set_value("latest edit: é🙂\n  preserved whitespace  ")
+    at.button(key="export_session").click().run()
+
+    assert not at.exception
+    assert session.assessments[first].note == "latest edit: é🙂\n  preserved whitespace  "
+    loaded = load_session(download_payloads[-1])
+    assert loaded.assessments == session.assessments
+    assert loaded.assessments[second] == other
+    assert session.comparison is comparison
+    assert at.session_state["difference_index"] == 0
+    assert any(c.value == "Assessed 2 / 2" for c in at.caption)
+    assert at.get("dialog")
+    assert at.get("download_button")[0].label == "Download session JSON"
+    assert at.get("download_button")[0].proto.ignore_rerun
+    assert "Export session JSON" in at.text_area[0].help
+    at.get("download_button")[0].click().run()
+    assert session.assessments == loaded.assessments  # Download changes no judgments.
+
+
+def test_pending_note_survives_navigation_without_separate_submission():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
+    at.segmented_control[0].set_value("both").run()
+    at.text_area[0].set_value("edited just before navigating")
+    at.button(key="next_difference").click().run()
+    assert not at.exception
+    at.button(key="previous_difference").click().run()
+    assert at.text_area[0].value == "edited just before navigating"
+    assert at.segmented_control[0].value == "both"
+
+
+def test_loaded_assessment_pending_edit_and_repeated_export(download_payloads):
+    from edu_disagreement.sessions import Source, load_session, new_session
+
+    original = new_session(Source("a.edus", "a\nbc\nd\nef"), Source("b.txt", "ab\nc\ndef"))
+    first, second = original.comparison.disagreement_regions
+    original.assess(first, "both", "loaded first note")
+    original.assess(second, "b_only", "other assessment")
+    at = AppTest.from_file(APP_PATH).run()
+    at.radio(key="workflow").set_value("Load assessment").run()
+    at.file_uploader(key="upload_session").upload(
+        "session.json", export_session(original).encode("utf-8"), "application/json"
+    ).run()
+    at.segmented_control[0].set_value("a_only")
+    at.text_area[0].set_value("loaded note edited immediately before export")
+    at.button(key="export_session").click().run()
+    assert not at.exception
+    loaded = load_session(download_payloads[-1])
+    assert loaded.assessments[first].verdict == "a_only"
+    assert loaded.assessments[first].note == "loaded note edited immediately before export"
+    assert loaded.assessments[second] == original.assessments[second]
+    assert (loaded.a_source, loaded.b_source) == (original.a_source, original.b_source)
+
+    # A full rerun closes the dialog and removes the previous download control.
+    at.run()
+    assert not at.get("download_button")
+    at.text_area[0].set_value("")
+    at.button(key="export_session").click().run()
+    assert not at.exception
+    latest = load_session(download_payloads[-1])
+    assert latest.assessments[first].note is None
+    assert latest.assessments[second] == original.assessments[second]
