@@ -181,6 +181,22 @@ def test_uploaders_accept_one_text_file_each():
     assert not at.button
 
 
+def test_session_labels_keep_existing_workflow_state_and_remove_redundant_captions():
+    at = AppTest.from_file(APP_PATH).run()
+    assert at.radio(key="workflow").label == "Session"
+    assert at.radio(key="workflow").options == ["New session", "Load session"]
+    assert at.session_state["workflow"] == "New assessment"
+    assert [uploader.label for uploader in at.file_uploader] == ["Annotation A", "Annotation B"]
+    assert not at.sidebar.caption
+    at.radio(key="workflow").set_value("Load assessment").run()
+    assert not at.exception
+    assert at.session_state["workflow"] == "Load assessment"
+    assert at.file_uploader[0].label == "Session JSON"
+    assert at.file_uploader[0].allowed_type == [".json"]
+    assert at.file_uploader[0].accept_multiple_files is False
+    assert not at.sidebar.caption
+
+
 @pytest.mark.parametrize(("a", "b"), [(b"ab\ncd", b"ab\ncd"), (b"", b"")])
 def test_zero_difference_case(a, b):
     at = upload_pair(AppTest.from_file(APP_PATH).run(), a, b)
@@ -380,6 +396,7 @@ def test_export_commits_pending_note_before_offering_download(download_payloads)
     assert at.text_area[0].proto.help == ""
     assert at.text_area[0].proto.placeholder == "Optional note…"
     assert at.text_area[0].label == "Note (optional)"
+    assert at.text_area[0].proto.label_visibility.value == 2  # Native collapsed label, still accessible.
     at.get("download_button")[0].click().run()
     assert session.assessments == loaded.assessments  # Download changes no judgments.
 

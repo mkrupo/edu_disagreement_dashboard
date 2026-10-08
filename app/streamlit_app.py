@@ -23,6 +23,7 @@ VERDICT_LABELS = {
     "a_only": "A only", "both": "Both", "b_only": "B only",
     "neither": "Neither / alternative needed", "unresolved": "Unresolved",
 }
+SESSION_LABELS = {"New assessment": "New session", "Load assessment": "Load session"}
 
 
 def render_edus(edus: tuple[ParsedEDU, ...], selected: tuple[int, ...]) -> str:
@@ -107,7 +108,7 @@ def show_navigation(index: int, total: int, *, bottom: bool = False) -> None:
             st.markdown("**Disagreement**", width="content")
             st.number_input(
                 "Disagreement number", min_value=1, max_value=total, step=1,
-                key="disagreement_number", width=110, label_visibility="collapsed", required=True,
+                key="disagreement_number", width=90, label_visibility="collapsed", required=True,
                 on_change=jump_to_disagreement, args=(total,),
             )
             st.markdown(f"/ {total}", width="content")
@@ -175,7 +176,7 @@ def show_assessment(region: DisagreementRegion) -> tuple[str, str]:
         st.text_area(
             "Note (optional)", key=note_key, width=650, height=100,
             disabled=st.session_state[verdict_key] is None,
-            placeholder="Optional note…",
+            placeholder="Optional note…", label_visibility="collapsed",
             on_change=save_assessment, args=(region, verdict_key, note_key),
         )
     return verdict_key, note_key
@@ -199,23 +200,21 @@ def export_filename() -> str:
 def sidebar_inputs() -> None:
     """Replace the active session only when uploaded source contents change."""
     with st.sidebar:
-        workflow = st.radio("Workflow", ("New assessment", "Load assessment"), key="workflow")
+        workflow = st.radio("Session", SESSION_LABELS, format_func=SESSION_LABELS.__getitem__, key="workflow")
         if workflow == "New assessment":
             a_upload = st.file_uploader(
-                "Annotation A (.txt / .edus)", type=["txt", "edus"],
+                "Annotation A", type=["txt", "edus"],
                 accept_multiple_files=False, key="upload_a",
             )
             b_upload = st.file_uploader(
-                "Annotation B (.txt / .edus)", type=["txt", "edus"],
+                "Annotation B", type=["txt", "edus"],
                 accept_multiple_files=False, key="upload_b",
             )
-            st.caption("One UTF-8 file per side. Each non-empty line is one EDU.")
             uploads = (a_upload, b_upload)
         else:
             uploads = (st.file_uploader(
-                "Saved session (.json)", type=["json"], accept_multiple_files=False, key="upload_session"
+                "Session JSON", type=["json"], accept_multiple_files=False, key="upload_session"
             ),)
-            st.caption("Restores both embedded annotations and their assessments.")
 
         signature = (workflow, tuple(
             (upload.name, sha256(upload.getvalue()).hexdigest()) if upload is not None else None
