@@ -58,7 +58,15 @@ Choose a verdict to enable the optional note field. Notes belong to individual d
 
 ## Export and resume work
 
-**Export JSON is the durable save mechanism.** Verdicts and notes otherwise live only in the running browser session. Replacing/removing inputs or switching between New session and Load session discards current unexported work. Refreshing or closing the page, or restarting the app, can also lose it. Export before these actions and periodically during assessment.
+**Export JSON is the durable save mechanism.** Verdicts and notes otherwise live only in the running browser session. Refreshing or closing the page, or restarting the app, can lose them; there is no browser-tab closing warning. Export before these actions and periodically during assessment.
+
+If the current session contains any assessments, switching between New session and Load session, replacing/removing annotations, or loading a different JSON asks **Replace current session?**:
+
+> Your current assessments may be lost. Export your session JSON before continuing.
+
+**Cancel** preserves the active comparison, assessments, notes, and position. Closing the dialog with X or Escape also cancels. Cancel first if you need to export. **Continue** applies the input change and discards the old session; loading JSON restores that file's saved work. An untouched session changes without a warning. Pending note edits received from the note field are retained when canceling.
+
+After canceling a file change, the native uploader may still show the canceled selection, or remain empty after removal. The active comparison still uses the previous sources. An unchanged canceled selection stays unapplied; to retry a canceled replacement, remove and reselect that file.
 
 1. Click **Export session JSON** in the sidebar. This commits any pending note edit and prepares a snapshot.
 2. In the dialog, click **Download session JSON**. The filename includes a UTC timestamp, for example `edu_assessment_20261008_143000_UTC.json`. Your browser controls where it is saved.
