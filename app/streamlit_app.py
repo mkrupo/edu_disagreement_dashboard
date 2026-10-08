@@ -197,10 +197,44 @@ def export_filename() -> str:
     return datetime.now(timezone.utc).strftime("edu_assessment_%Y%m%d_%H%M%S_UTC.json")
 
 
+def request_workflow_change() -> None:
+    """Keep the current upload widgets mounted until a switch is confirmed."""
+    session = st.session_state.get("assessment_session")
+    if session is not None and session.assessments:
+        st.session_state["pending_workflow"] = st.session_state["workflow"]
+        st.session_state["workflow"] = st.session_state["upload_signature"][0]
+
+
+def cancel_replacement() -> None:
+    st.session_state.pop("pending_workflow", None)
+    st.session_state.pop("pending_upload_change", None)
+
+
+def confirm_replacement() -> None:
+    workflow = st.session_state.pop("pending_workflow", None)
+    if workflow is not None:
+        st.session_state["workflow"] = workflow
+    st.session_state.pop("pending_upload_change", None)
+    st.session_state["replacement_confirmed"] = True
+
+
+@st.dialog("Replace current session?", on_dismiss=cancel_replacement)
+def show_replacement_dialog() -> None:
+    st.write("Your current assessments may be lost. Export your session JSON before continuing.")
+    with st.container(horizontal=True):
+        cancel = st.button("Cancel", key="cancel_replacement", on_click=cancel_replacement)
+        proceed = st.button("Continue", key="continue_replacement", on_click=confirm_replacement)
+    if cancel or proceed:
+        st.rerun()
+
+
 def sidebar_inputs() -> None:
-    """Replace the active session only when uploaded source contents change."""
+    """Observe new inputs; preserve assessed sessions until replacement is confirmed."""
     with st.sidebar:
-        workflow = st.radio("Session", SESSION_LABELS, format_func=SESSION_LABELS.__getitem__, key="workflow")
+        workflow = st.radio(
+            "Session", SESSION_LABELS, format_func=SESSION_LABELS.__getitem__,
+            key="workflow", on_change=request_workflow_change,
+        )
         if workflow == "New assessment":
             a_upload = st.file_uploader(
                 "Annotation A", type=["txt", "edus"],
@@ -220,35 +254,48 @@ def sidebar_inputs() -> None:
             (upload.name, sha256(upload.getvalue()).hexdigest()) if upload is not None else None
             for upload in uploads
         ))
-        if signature != st.session_state.get("upload_signature"):
+        confirmed = st.session_state.pop("replacement_confirmed", False)
+        if signature != st.session_state.get("upload_signature") or confirmed:
+            # Remember observed inputs even on Cancel: native uploaders cannot
+            # restore old files, and unchanged canceled selections must not apply
+            # themselves (or reopen the warning) on an unrelated rerun.
             st.session_state["upload_signature"] = signature
-            for key in ("assessment_session", "comparison_result", "comparison_error"):
-                st.session_state.pop(key, None)
-            st.session_state["difference_index"] = 0
-            st.session_state["disagreement_number"] = 1
-            st.session_state["session_generation"] = st.session_state.get("session_generation", 0) + 1
-            if all(upload is not None for upload in uploads):
-                try:
-                    if workflow == "New assessment":
-                        session = new_session(*(Source(upload.name, upload.getvalue().decode("utf-8"))
-                                                for upload in uploads))
-                        session.context_edus = st.session_state.get("context_edus", 1)
-                    else:
-                        session = load_session(uploads[0].getvalue())
-                    st.session_state["assessment_session"] = session
-                    st.session_state["comparison_result"] = session.comparison
-                    st.session_state["difference_index"] = session.current_disagreement
-                    st.session_state["disagreement_number"] = session.current_disagreement + 1
-                    st.session_state["context_edus"] = session.context_edus
-                except SessionValidationError as error:
-                    st.session_state["comparison_error"] = f"Session validation failed: {error}"
-                except (ContentMismatchError, BoundaryProjectionError) as error:
-                    st.session_state["comparison_error"] = str(error)
-                except UnicodeDecodeError:
-                    st.session_state["comparison_error"] = "Both annotations must be UTF-8 encoded text files."
+            session = st.session_state.get("assessment_session")
+            if session is not None and session.assessments and not confirmed:
+                st.session_state["pending_upload_change"] = True
+            else:
+                replace_inputs(workflow, uploads)
 
         st.session_state.setdefault("context_edus", 1)
         st.number_input("Context EDUs: ± N", min_value=0, max_value=10, step=1, key="context_edus")
+
+
+def replace_inputs(workflow: str, uploads: tuple) -> None:
+    """Apply untouched or explicitly confirmed inputs using the existing adapters."""
+    for key in ("assessment_session", "comparison_result", "comparison_error"):
+        st.session_state.pop(key, None)
+    st.session_state["difference_index"] = 0
+    st.session_state["disagreement_number"] = 1
+    st.session_state["session_generation"] = st.session_state.get("session_generation", 0) + 1
+    if all(upload is not None for upload in uploads):
+        try:
+            if workflow == "New assessment":
+                session = new_session(*(Source(upload.name, upload.getvalue().decode("utf-8"))
+                                        for upload in uploads))
+                session.context_edus = st.session_state.get("context_edus", 1)
+            else:
+                session = load_session(uploads[0].getvalue())
+            st.session_state["assessment_session"] = session
+            st.session_state["comparison_result"] = session.comparison
+            st.session_state["difference_index"] = session.current_disagreement
+            st.session_state["disagreement_number"] = session.current_disagreement + 1
+            st.session_state["context_edus"] = session.context_edus
+        except SessionValidationError as error:
+            st.session_state["comparison_error"] = f"Session validation failed: {error}"
+        except (ContentMismatchError, BoundaryProjectionError) as error:
+            st.session_state["comparison_error"] = str(error)
+        except UnicodeDecodeError:
+            st.session_state["comparison_error"] = "Both annotations must be UTF-8 encoded text files."
 
 
 def main() -> None:
@@ -315,8 +362,11 @@ def main() -> None:
         st.info("No segmentation differences. The full annotations are available below.")
 
     session.current_disagreement = st.session_state["difference_index"]
+    replacement_pending = (
+        "pending_workflow" in st.session_state or st.session_state.get("pending_upload_change", False)
+    )
     with st.sidebar:
-        if st.button("Export session JSON", key="export_session"):
+        if st.button("Export session JSON", key="export_session", disabled=replacement_pending):
             # A normal button rerun receives pending note edits before creating
             # download bytes. A direct download starts before that rerun ends.
             if region is not None:
@@ -348,6 +398,9 @@ def main() -> None:
             st.caption("Canonical text below is reconstructed by concatenating the original EDUs.")
         st.code(result.canonical_text, language=None)
         st.json(result.to_dict())
+
+    if replacement_pending:
+        show_replacement_dialog()
 
 
 if __name__ == "__main__":

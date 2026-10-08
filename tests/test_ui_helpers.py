@@ -316,16 +316,204 @@ def test_deselecting_verdict_means_unassessed():
     assert_progress(at, 0, 0, 1)
 
 
-def test_upload_replacement_discards_previous_assessments():
+def test_upload_replacement_discards_previous_assessments_only_after_continue():
     at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
     at.segmented_control[0].set_value("a_only").run()
     at.text_area[0].set_value("Previous source").run()
     at.file_uploader(key="upload_a").upload("replacement.edus", b"abc\nde\nf", "text/plain").run()
+    assert at.get("dialog")
+    assert at.session_state["assessment_session"].a_source.filename == "a.txt"
+    at.button(key="continue_replacement").click().run()
     assert not at.exception
     assert at.session_state["difference_index"] == 0
     assert not at.session_state["assessment_session"].assessments
     assert at.segmented_control[0].value is None
     assert at.text_area[0].value == ""
+
+
+def assessed_pair():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
+    at.segmented_control[0].set_value("both").run()
+    at.text_area[0].set_value("Independent first note").run()
+    at.button(key="next_difference").click().run()
+    at.segmented_control[0].set_value("unresolved").run()
+    at.text_area[0].set_value("Original second note").run()
+    at.number_input(key="context_edus").set_value(3).run()
+    return at
+
+
+def assert_replacement_warning(at):
+    assert not at.exception
+    assert at.get("dialog")[0].proto.dialog.title == "Replace current session?"
+    assert any(element.value == (
+        "Your current assessments may be lost. Export your session JSON before continuing."
+    ) for element in at.markdown)
+    assert at.button(key="cancel_replacement").label == "Cancel"
+    assert at.button(key="continue_replacement").label == "Continue"
+
+
+@pytest.mark.parametrize("side", ["a", "b"])
+@pytest.mark.parametrize("remove", [False, True], ids=["replace", "remove"])
+@pytest.mark.parametrize("decision", ["cancel", "continue"])
+def test_assessed_annotation_changes_require_confirmation(side, remove, decision):
+    at = assessed_pair()
+    session = at.session_state["assessment_session"]
+    comparison = session.comparison
+    first, second = comparison.disagreement_regions
+    other_assessment = session.assessments[first]
+    generation = at.session_state["session_generation"]
+    at.text_area[0].set_value("Pending edit before changing files")
+    uploader = at.file_uploader(key="upload_" + side)
+    if remove:
+        uploader.clear().run()
+    else:
+        uploader.upload("replacement.edus", b"abc\ndef", "text/plain").run()
+    assert_replacement_warning(at)
+    assert at.session_state["assessment_session"] is session
+    assert session.assessments[second].note == "Pending edit before changing files"
+    assert session.assessments[first] == other_assessment
+    assert_navigation(at, 2, 2)
+    at.button(key=decision + "_replacement").click().run()
+    assert not at.exception and not at.get("dialog")
+    if decision == "cancel":
+        assert at.session_state["assessment_session"] is session
+        assert at.session_state["comparison_result"] is comparison
+        assert at.session_state["session_generation"] == generation
+        assert at.text_area[0].value == "Pending edit before changing files"
+        assert at.segmented_control[0].value == "unresolved"
+        assert_navigation(at, 2, 2)
+        at.number_input(key="context_edus").set_value(4).run()
+        at.button(key="previous_difference_bottom").click().run()
+        assert not at.get("dialog")  # Unchanged canceled inputs never apply on later reruns.
+        assert at.session_state["assessment_session"] is session
+        assert at.text_area[0].value == "Independent first note"
+    elif remove:
+        assert "assessment_session" not in at.session_state
+        assert "comparison_result" not in at.session_state
+        assert at.session_state["difference_index"] == 0
+    else:
+        replacement = at.session_state["assessment_session"]
+        assert replacement is not session
+        assert not replacement.assessments
+        assert getattr(replacement, side + "_source").filename == "replacement.edus"
+        assert at.session_state["difference_index"] == 0
+        assert at.text_area[0].value == ""
+
+
+@pytest.mark.parametrize("loaded", [False, True], ids=["new-to-load", "load-to-new"])
+@pytest.mark.parametrize("decision", ["cancel", "continue"])
+def test_workflow_switch_keeps_current_inputs_until_confirmed(loaded, decision):
+    at = assessed_pair()
+    if loaded:
+        payload = export_session(at.session_state["assessment_session"]).encode("utf-8")
+        at = AppTest.from_file(APP_PATH).run()
+        at.radio(key="workflow").set_value("Load assessment").run()
+        at.file_uploader(key="upload_session").upload("saved.json", payload, "application/json").run()
+    session = at.session_state["assessment_session"]
+    workflow = at.session_state["workflow"]
+    input_names = [uploader.value.name for uploader in at.file_uploader]
+    at.text_area[0].set_value("Pending note before switching workflows")
+    target = "New assessment" if loaded else "Load assessment"
+    at.radio(key="workflow").set_value(target).run()
+    assert_replacement_warning(at)
+    assert at.radio(key="workflow").value == workflow
+    assert [uploader.value.name for uploader in at.file_uploader] == input_names
+    assert at.session_state["assessment_session"] is session
+    assert at.text_area[0].value == "Pending note before switching workflows"
+    at.button(key=decision + "_replacement").click().run()
+    assert not at.exception and not at.get("dialog")
+    if decision == "cancel":
+        assert at.radio(key="workflow").value == workflow
+        assert [uploader.value.name for uploader in at.file_uploader] == input_names
+        assert at.session_state["assessment_session"] is session
+        assert at.text_area[0].value == "Pending note before switching workflows"
+        assert_navigation(at, 2, 2)
+        at.run()
+        assert not at.get("dialog")
+    else:
+        assert at.radio(key="workflow").value == target
+        assert "assessment_session" not in at.session_state
+        assert "comparison_result" not in at.session_state
+        assert at.session_state["difference_index"] == 0
+        assert len(at.file_uploader) == (2 if loaded else 1)
+
+
+@pytest.mark.parametrize("payload_kind", ["valid", "invalid", "removed"])
+@pytest.mark.parametrize("decision", ["cancel", "continue"])
+def test_loading_different_json_requires_confirmation(payload_kind, decision):
+    from edu_disagreement.sessions import Source, new_session
+
+    original = assessed_pair().session_state["assessment_session"]
+    replacement = new_session(Source("new-a.edus", "a\nb\nc"), Source("new-b.txt", "abc"))
+    replacement.assess(replacement.comparison.disagreement_regions[0], "b_only", "Replacement note")
+    replacement.context_edus = 5
+    at = AppTest.from_file(APP_PATH).run()
+    at.radio(key="workflow").set_value("Load assessment").run()
+    at.file_uploader(key="upload_session").upload(
+        "original.json", export_session(original).encode("utf-8"), "application/json"
+    ).run()
+    session = at.session_state["assessment_session"]
+    at.text_area[0].set_value("Pending loaded note")
+    uploader = at.file_uploader(key="upload_session")
+    if payload_kind == "removed":
+        uploader.clear().run()
+    else:
+        payload = export_session(replacement).encode("utf-8") if payload_kind == "valid" else b"{"
+        uploader.upload("replacement.json", payload, "application/json").run()
+    assert_replacement_warning(at)
+    assert at.session_state["assessment_session"] is session
+    assert at.text_area[0].value == "Pending loaded note"
+    at.button(key=decision + "_replacement").click().run()
+    assert not at.exception and not at.get("dialog")
+    if decision == "cancel":
+        assert at.session_state["assessment_session"] is session
+        assert not at.error
+        assert_navigation(at, 2, 2)
+        at.run()
+        assert at.text_area[0].value == "Pending loaded note"
+    elif payload_kind == "valid":
+        assert at.session_state["assessment_session"] == replacement
+        assert at.text_area[0].value == "Replacement note"
+        assert at.segmented_control[0].value == "b_only"
+        assert at.number_input(key="context_edus").value == 5
+        assert_navigation(at, 1, 1)
+    else:
+        assert "assessment_session" not in at.session_state
+        assert "comparison_result" not in at.session_state
+        if payload_kind == "invalid":
+            assert "Session validation failed" in at.error[0].value
+
+
+def test_cancel_preserves_latest_note_in_export_and_new_changes_prompt_again(download_payloads):
+    from edu_disagreement.sessions import load_session
+
+    at = assessed_pair()
+    session = at.session_state["assessment_session"]
+    at.text_area[0].set_value("Note pending before canceled removal")
+    at.file_uploader(key="upload_a").clear().run()
+    assert_replacement_warning(at)
+    at.button(key="cancel_replacement").click().run()
+    at.button(key="export_session").click().run()
+    restored = load_session(download_payloads[-1])
+    assert restored == session
+    at.run()  # Close the export dialog.
+    at.file_uploader(key="upload_a").upload("different.txt", b"abc\ndef", "text/plain").run()
+    assert_replacement_warning(at)  # Cancel is not permission for future changes.
+
+
+def test_unchanged_sources_and_cleared_assessments_do_not_warn():
+    at = assessed_pair()
+    session = at.session_state["assessment_session"]
+    upload_pair(at, b"a\nbc\nd\nef", b"ab\nc\ndef")
+    assert not at.exception and not at.get("dialog")
+    assert at.session_state["assessment_session"] is session
+    at.segmented_control[0].set_value(None).run()
+    at.button(key="previous_difference").click().run()
+    at.segmented_control[0].set_value(None).run()
+    assert not session.assessments
+    at.radio(key="workflow").set_value("Load assessment").run()
+    assert not at.get("dialog")
+    assert "assessment_session" not in at.session_state
 
 
 def test_edus_extension_uses_identical_parser():
