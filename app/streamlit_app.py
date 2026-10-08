@@ -1,5 +1,6 @@
 """Local inspection UI; all scientific behavior stays in edu_disagreement."""
 
+from datetime import datetime, timezone
 from hashlib import sha256
 from html import escape
 
@@ -13,7 +14,7 @@ from edu_disagreement import (
     ParsedEDU,
 )
 from edu_disagreement.sessions import (
-    VERDICTS, SessionValidationError, Source, compare_uploads,
+    VERDICTS, Session, SessionValidationError, Source, compare_uploads,
     export_session, load_session, new_session,
 )
 
@@ -59,6 +60,62 @@ def move_difference(step: int, total: int) -> None:
     """Clamp button navigation to the existing comparison's difference range."""
     index = st.session_state.get("difference_index", 0)
     st.session_state["difference_index"] = max(0, min(index + step, total - 1))
+    st.session_state["disagreement_number"] = st.session_state["difference_index"] + 1
+
+
+def jump_to_disagreement(total: int) -> None:
+    number = st.session_state["disagreement_number"]
+    index = number - 1 if type(number) is int else st.session_state["difference_index"]
+    st.session_state["difference_index"] = max(0, min(index, total - 1))
+    st.session_state["disagreement_number"] = st.session_state["difference_index"] + 1
+
+
+def progress_counts(session: Session) -> tuple[int, int, int]:
+    """Count decided, explicit unresolved, and absent assessments separately."""
+    decided = unresolved = open_count = 0
+    for region in session.comparison.disagreement_regions:
+        assessment = session.assessments.get(region)
+        if assessment is None:
+            open_count += 1
+        elif assessment.verdict == "unresolved":
+            unresolved += 1
+        else:
+            decided += 1
+    return decided, unresolved, open_count
+
+
+def show_progress(session: Session) -> None:
+    decided, unresolved, open_count = progress_counts(session)
+    with st.container(horizontal_alignment="center", gap="small"):
+        st.caption(f"✓ {decided} Decided · ? {unresolved} Unresolved · ○ {open_count} Open",
+                   width="content")
+        if session.comparison.disagreement_regions and open_count == 0:
+            st.caption("All disagreements reviewed", width="content")
+
+
+def show_navigation(index: int, total: int, *, bottom: bool = False) -> None:
+    suffix = "_bottom" if bottom else ""
+    with st.container(
+        horizontal=True, horizontal_alignment="center", vertical_alignment="center", gap="small"
+    ):
+        st.button(
+            "←", help="Previous disagreement", width="content",
+            disabled=index == 0, key=f"previous_difference{suffix}",
+            on_click=move_difference, args=(-1, total),
+        )
+        if not bottom:
+            st.markdown("**Disagreement**", width="content")
+            st.number_input(
+                "Disagreement number", min_value=1, max_value=total, step=1,
+                key="disagreement_number", width=110, label_visibility="collapsed", required=True,
+                on_change=jump_to_disagreement, args=(total,),
+            )
+            st.markdown(f"/ {total}", width="content")
+        st.button(
+            "→", help="Next disagreement", width="content",
+            disabled=index == total - 1, key=f"next_difference{suffix}",
+            on_click=move_difference, args=(1, total),
+        )
 
 
 def show_annotations(
@@ -118,22 +175,25 @@ def show_assessment(region: DisagreementRegion) -> tuple[str, str]:
         st.text_area(
             "Note (optional)", key=note_key, width=650, height=100,
             disabled=st.session_state[verdict_key] is None,
-            help="Choose a verdict to add a note. Edits save on leaving the field, Ctrl+Enter, "
-                 "or Export session JSON. Export saves the note before opening the download dialog.",
+            placeholder="Optional note…",
             on_change=save_assessment, args=(region, verdict_key, note_key),
         )
     return verdict_key, note_key
 
 
 @st.dialog("Export session JSON", on_dismiss="rerun")
-def show_export_dialog(payload: bytes) -> None:
+def show_export_dialog(payload: bytes, filename: str) -> None:
     """Offer an immutable export while the note editor is behind a modal."""
     st.caption("Your current note is saved in this export. Download the JSON, "
                "then close this dialog to continue editing.")
     st.download_button(
-        "Download session JSON", payload, file_name="edu_assessment_session.json",
+        "Download session JSON", payload, file_name=filename,
         mime="application/json", on_click="ignore",
     )
+
+
+def export_filename() -> str:
+    return datetime.now(timezone.utc).strftime("edu_assessment_%Y%m%d_%H%M%S_UTC.json")
 
 
 def sidebar_inputs() -> None:
@@ -166,6 +226,7 @@ def sidebar_inputs() -> None:
             for key in ("assessment_session", "comparison_result", "comparison_error"):
                 st.session_state.pop(key, None)
             st.session_state["difference_index"] = 0
+            st.session_state["disagreement_number"] = 1
             st.session_state["session_generation"] = st.session_state.get("session_generation", 0) + 1
             if all(upload is not None for upload in uploads):
                 try:
@@ -178,6 +239,7 @@ def sidebar_inputs() -> None:
                     st.session_state["assessment_session"] = session
                     st.session_state["comparison_result"] = session.comparison
                     st.session_state["difference_index"] = session.current_disagreement
+                    st.session_state["disagreement_number"] = session.current_disagreement + 1
                     st.session_state["context_edus"] = session.context_edus
                 except SessionValidationError as error:
                     st.session_state["comparison_error"] = f"Session validation failed: {error}"
@@ -237,40 +299,31 @@ def main() -> None:
 
     region = None
     assessment_widgets = None
+    show_progress(session)
     if result.disagreement_regions:
         total = len(result.disagreement_regions)
         index = max(0, min(st.session_state.get("difference_index", 0), total - 1))
         st.session_state["difference_index"] = index
-        with st.container(
-            horizontal=True, horizontal_alignment="center", vertical_alignment="center", gap="small"
-        ):
-            st.button(
-                "←", help="Previous disagreement", width="content",
-                disabled=index == 0, key="previous_difference",
-                on_click=move_difference, args=(-1, total),
-            )
-            st.markdown(f"**Disagreement {index + 1} / {total}**", width="content")
-            st.button(
-                "→", help="Next disagreement", width="content",
-                disabled=index == total - 1, key="next_difference",
-                on_click=move_difference, args=(1, total),
-            )
+        # Synchronize before creating the numeric widget, including after upload
+        # replacement or session restoration. Callbacks run before this script.
+        st.session_state["disagreement_number"] = index + 1
+        show_navigation(index, total)
         region = result.disagreement_regions[index]
         show_annotations(result, names, region, context_edus=session.context_edus)
         assessment_widgets = show_assessment(region)
+        show_navigation(index, total, bottom=True)
     else:
         st.info("No segmentation differences. The full annotations are available below.")
 
     session.current_disagreement = st.session_state["difference_index"]
-    st.caption(f"Assessed {len(session.assessments)} / {len(result.disagreement_regions)}")
     with st.sidebar:
         if st.button("Export session JSON", key="export_session"):
             # A normal button rerun receives pending note edits before creating
             # download bytes. A direct download starts before that rerun ends.
             if region is not None:
                 save_assessment(region, *assessment_widgets)
-            show_export_dialog(export_session(session).encode("utf-8"))
-        st.caption("Includes the original A/B contents and all current assessments.")
+            show_export_dialog(export_session(session).encode("utf-8"), export_filename())
+        st.caption("Export JSON to keep your work.")
 
     with st.expander("Full annotations", expanded=False):
         show_annotations(result, names, region, full=True)

@@ -1,5 +1,7 @@
 from html.parser import HTMLParser
+import datetime
 from pathlib import Path
+import re
 import runpy
 
 import pytest
@@ -44,6 +46,14 @@ def upload_pair(at, a, b):
     at.file_uploader(key="upload_a").upload("a.txt", a, "text/plain")
     at.file_uploader(key="upload_b").upload("b.txt", b, "text/plain")
     return at.run()
+
+
+def assert_progress(at, decided, unresolved, open_count):
+    expected = f"✓ {decided} Decided · ? {unresolved} Unresolved · ○ {open_count} Open"
+    assert any(c.value == expected for c in at.caption)
+    assert at.main.caption[0].value == expected  # Above annotation labels and note/navigation below.
+    assert decided + unresolved + open_count == len(at.session_state["comparison_result"].disagreement_regions)
+    assert not any(c.value.startswith("Assessed ") for c in at.caption)
 
 
 def test_upload_adapter_uses_existing_parser_and_preserves_lines():
@@ -112,20 +122,25 @@ def test_automatic_comparison_navigation_and_upload_replacement():
     assert at.button(key="next_difference").proto.help == "Next disagreement"
     assert not at.selectbox
     assert all(not expander.proto.expanded for expander in at.expander)
-    assert any("Disagreement 1 / 2" in element.value for element in at.markdown)
+    assert at.number_input(key="disagreement_number").value == 1
+    assert at.number_input(key="disagreement_number").min == 1
+    assert at.number_input(key="disagreement_number").max == 2
 
     at.button(key="next_difference").click().run()
     assert at.session_state["difference_index"] == 1
+    assert at.number_input(key="disagreement_number").value == 2
     assert at.button(key="next_difference").disabled
     assert not at.button(key="previous_difference").disabled
     at.button(key="previous_difference").click().run()
     assert at.session_state["difference_index"] == 0
+    assert at.number_input(key="disagreement_number").value == 1
     at.button(key="next_difference").click().run()
 
     at.file_uploader(key="upload_a").upload("replacement.txt", b"abc\nde\nf", "text/plain").run()
     assert not at.exception
     assert at.session_state["difference_index"] == 0
     assert at.session_state["comparison_result"].a_edus[0].text == "abc"
+    assert at.number_input(key="disagreement_number").value == 1
     assert at.button(key="previous_difference").disabled
 
     at.file_uploader(key="upload_b").clear().run()
@@ -181,7 +196,9 @@ def test_zero_difference_case(a, b):
     ]
     assert all(not e.proto.expanded for e in at.expander)
     assert not at.segmented_control
-    assert any(c.value == "Assessed 0 / 0" for c in at.caption)
+    assert_progress(at, 0, 0, 0)
+    assert [widget.key for widget in at.number_input] == ["context_edus"]
+    assert not any(c.value == "All disagreements reviewed" for c in at.caption)
     assert not at.get("download_button")
     at.button(key="export_session").click().run()
     assert not at.exception
@@ -227,7 +244,7 @@ def test_each_verdict_is_saved_immediately_without_advancing(verdict):
     assert not at.exception
     assert session.assessments[region].verdict == verdict
     assert at.session_state["difference_index"] == 0
-    assert any(c.value == "Assessed 1 / 2" for c in at.caption)
+    assert_progress(at, int(verdict != "unresolved"), int(verdict == "unresolved"), 1)
     assert not at.text_area[0].disabled
 
 
@@ -250,7 +267,7 @@ def test_assessments_and_independent_notes_survive_navigation_and_json_only_relo
     at.button(key="next_difference").click().run()
     assert at.segmented_control[0].value == "unresolved"
     assert at.text_area[0].value == "Independent second note"
-    assert any(c.value == "Assessed 2 / 2" for c in at.caption)
+    assert_progress(at, 1, 1, 0)
     payload = export_session(at.session_state["assessment_session"]).encode("utf-8")
 
     restored = AppTest.from_file(APP_PATH).run()
@@ -264,6 +281,7 @@ def test_assessments_and_independent_notes_survive_navigation_and_json_only_relo
     assert restored.session_state["comparison_result"] == original_comparison
     assert restored.session_state["comparison_result"] is not original_comparison
     assert restored.session_state["difference_index"] == 1
+    assert restored.number_input(key="disagreement_number").value == 2
     assert restored.number_input(key="context_edus").value == 4
     assert restored.segmented_control[0].value == "unresolved"
     assert restored.text_area[0].value == "Independent second note"
@@ -279,7 +297,7 @@ def test_deselecting_verdict_means_unassessed():
     at.segmented_control[0].set_value(None).run()
     assert not at.exception
     assert not at.session_state["assessment_session"].assessments
-    assert any(c.value == "Assessed 0 / 1" for c in at.caption)
+    assert_progress(at, 0, 0, 1)
 
 
 def test_upload_replacement_discards_previous_assessments():
@@ -355,11 +373,13 @@ def test_export_commits_pending_note_before_offering_download(download_payloads)
     assert loaded.assessments[second] == other
     assert session.comparison is comparison
     assert at.session_state["difference_index"] == 0
-    assert any(c.value == "Assessed 2 / 2" for c in at.caption)
+    assert_progress(at, 1, 1, 0)
     assert at.get("dialog")
     assert at.get("download_button")[0].label == "Download session JSON"
     assert at.get("download_button")[0].proto.ignore_rerun
-    assert "Export session JSON" in at.text_area[0].help
+    assert at.text_area[0].proto.help == ""
+    assert at.text_area[0].proto.placeholder == "Optional note…"
+    assert at.text_area[0].label == "Note (optional)"
     at.get("download_button")[0].click().run()
     assert session.assessments == loaded.assessments  # Download changes no judgments.
 
@@ -406,3 +426,130 @@ def test_loaded_assessment_pending_edit_and_repeated_export(download_payloads):
     latest = load_session(download_payloads[-1])
     assert latest.assessments[first].note is None
     assert latest.assessments[second] == original.assessments[second]
+
+
+def test_progress_counts_all_verdicts_and_an_open_disagreement():
+    from edu_disagreement.sessions import Source, new_session
+
+    session = new_session(Source("a.txt", "a\nbc\n" * 6), Source("b.txt", "ab\nc\n" * 6))
+    assert helpers["progress_counts"](session) == (0, 0, 6)
+    for region, verdict in zip(session.comparison.disagreement_regions, VERDICTS):
+        session.assess(region, verdict)
+    assert helpers["progress_counts"](session) == (4, 1, 1)
+    session.assess(session.comparison.disagreement_regions[-1], "unresolved")
+    assert helpers["progress_counts"](session) == (4, 2, 0)
+
+
+@pytest.mark.parametrize(("verdicts", "counts"), [
+    (("both", "neither"), (2, 0, 0)),
+    (("a_only", "unresolved"), (1, 1, 0)),
+    (("unresolved", "unresolved"), (0, 2, 0)),
+])
+def test_all_reviewed_status_includes_explicit_unresolved(verdicts, counts):
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
+    assert not any(c.value == "All disagreements reviewed" for c in at.caption)
+    at.segmented_control[0].set_value(verdicts[0]).run()
+    at.button(key="next_difference_bottom").click().run()
+    at.segmented_control[0].set_value(verdicts[1]).run()
+    assert_progress(at, *counts)
+    assert any(c.value == "All disagreements reviewed" for c in at.caption)
+    assert not any("fully resolved" in c.value.lower() or "adjudicated" in c.value.lower() for c in at.caption)
+    assert at.button(key="export_session")
+    at.segmented_control[0].set_value(None).run()
+    assert not any(c.value == "All disagreements reviewed" for c in at.caption)
+
+
+def assert_navigation(at, number, total):
+    assert not at.exception
+    assert at.session_state["difference_index"] == number - 1
+    assert at.number_input(key="disagreement_number").value == number
+    assert at.session_state["assessment_session"].current_disagreement == number - 1
+    for suffix in ("", "_bottom"):
+        assert at.button(key="previous_difference" + suffix).disabled == (number == 1)
+        assert at.button(key="next_difference" + suffix).disabled == (number == total)
+
+
+def test_numeric_navigation_and_both_arrow_pairs_stay_synchronized():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef\ng\nhi", b"ab\nc\nde\nf\nghi")
+    comparison = at.session_state["comparison_result"]
+    assert_navigation(at, 1, 3)
+    at.number_input(key="disagreement_number").set_value(2).run()
+    assert_navigation(at, 2, 3)
+    at.button(key="next_difference_bottom").click().run()
+    assert_navigation(at, 3, 3)
+    at.button(key="previous_difference").click().run()
+    assert_navigation(at, 2, 3)
+    at.button(key="previous_difference_bottom").click().run()
+    assert_navigation(at, 1, 3)
+    at.button(key="next_difference").click().run()
+    assert_navigation(at, 2, 3)
+    at.number_input(key="disagreement_number").set_value(3).run()
+    assert_navigation(at, 3, 3)
+    assert at.session_state["comparison_result"] is comparison
+
+
+@pytest.mark.parametrize("control", ["next_difference", "next_difference_bottom", "disagreement_number"])
+def test_all_navigation_controls_preserve_pending_notes(control):
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef", b"ab\nc\ndef")
+    at.segmented_control[0].set_value("both").run()
+    at.text_area[0].set_value("pending note before " + control)
+    if control == "disagreement_number":
+        at.number_input(key=control).set_value(2).run()
+    else:
+        at.button(key=control).click().run()
+    assert_navigation(at, 2, 2)
+    assert at.segmented_control[0].value is None
+    at.button(key="previous_difference_bottom").click().run()
+    assert_navigation(at, 1, 2)
+    assert at.text_area[0].value == "pending note before " + control
+    assert at.segmented_control[0].value == "both"
+
+
+def test_direct_navigation_restores_on_load_and_resets_with_smaller_upload():
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nbc\nd\nef\ng\nhi", b"ab\nc\nde\nf\nghi")
+    at.number_input(key="disagreement_number").set_value(3).run()
+    payload = export_session(at.session_state["assessment_session"]).encode("utf-8")
+    restored = AppTest.from_file(APP_PATH).run()
+    restored.radio(key="workflow").set_value("Load assessment").run()
+    restored.file_uploader(key="upload_session").upload("session.json", payload, "application/json").run()
+    assert_navigation(restored, 3, 3)
+    upload_pair(at, b"abc\ndef\nghi", b"abcdefghi")
+    assert_navigation(at, 1, 1)
+    assert at.number_input(key="disagreement_number").min == 1
+    assert at.number_input(key="disagreement_number").max == 1
+
+
+def test_export_filename_is_utc_and_stable_for_each_snapshot(monkeypatch):
+    real_datetime = datetime.datetime
+
+    class Clock(real_datetime):
+        instant = real_datetime(2026, 10, 8, 18, 2, 3, tzinfo=datetime.timezone(datetime.timedelta(hours=2)))
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.instant.astimezone(tz) if tz else cls.instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(datetime, "datetime", Clock)
+    snapshots = []
+    native_download = st.download_button
+
+    def download(label, data, **kwargs):
+        snapshots.append((data, kwargs["file_name"]))
+        return native_download(label, data, **kwargs)
+
+    monkeypatch.setattr(st, "download_button", download)
+    at = upload_pair(AppTest.from_file(APP_PATH).run(), b"a\nb", b"ab")
+    at.segmented_control[0].set_value("both").run()
+    at.button(key="export_session").click().run()
+    assert not at.exception
+    snapshot = snapshots[-1]
+    assert snapshot[1] == "edu_assessment_20261008_160203_UTC.json"
+    assert re.fullmatch(r"edu_assessment_\d{8}_\d{6}_UTC\.json", snapshot[1])
+    Clock.instant += datetime.timedelta(seconds=10)
+    at.get("download_button")[0].click().run()
+    assert snapshots[-1] == snapshot
+    at.run()
+    at.button(key="export_session").click().run()
+    assert not at.exception
+    assert snapshots[-1][1] == "edu_assessment_20261008_160213_UTC.json"
+    assert snapshots[-1][0] == snapshot[0]  # Timestamp is outside the JSON schema.
