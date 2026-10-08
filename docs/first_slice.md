@@ -98,7 +98,7 @@ Tests cover the original scenarios, exact whitespace and newline preservation, e
 
 ## Local inspection interface
 
-Launch with `uv run streamlit run app/streamlit_app.py`. In the sidebar, choose New assessment and upload one `.txt` or `.edus` file per side, or choose Load assessment and upload only a saved session `.json`. Comparison runs automatically. A compact comparability status and mode explanation appear above centered Previous/Next Disagreement navigation. Changing either source clears old results and assessments and resets selection to disagreement 1.
+Launch with `uv run streamlit run app/streamlit_app.py`. In the sidebar, choose New session and upload one `.txt` or `.edus` file per side, or choose Load session and upload only a saved session `.json`. Comparison runs automatically. A compact comparability status and mode explanation appear above centered Previous/Next Disagreement navigation. Changing either source clears old results and assessments and resets selection to disagreement 1.
 
 The main A-left/B-right view shows selected EDUs plus context from the sidebar setting (0–10 EDUs per side, default 1), using only region EDU indices. Context changes only rendering, not comparison. Only selected EDUs are highlighted; original text and source-line information are retained. Full annotations, comparison summary, and developer diagnostics remain collapsed, with canonical text and comparison JSON at the bottom. With no disagreements, full annotations and session export remain available without navigation or verdict controls.
 
